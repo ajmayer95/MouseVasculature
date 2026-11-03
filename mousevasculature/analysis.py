@@ -106,6 +106,7 @@ def add_analysis_layers(viewer, skeleton, graph, scale, name, visible=True):
         edge_ids.extend([edge['id']] * (len(points) - 1))
     if vectors:
         layer = viewer.add_vectors(np.asarray(vectors), ndim=3, scale=scale,
+                                   vector_style='line',
                                    edge_color='cyan', edge_width=2, opacity=1,
                                    name=f'{name} centerlines', visible=visible,
                                    features={'edge_id': edge_ids})

@@ -55,7 +55,7 @@ Original masks remain at their source location and are excluded from Git.
 ## Skeletonize and vectorize a specific filament
 
 From the project folder, launch one ROI with the mask, centerline paths, endpoints,
-and junctions:
+and junctions. Centerlines render as plain strokes without arrowheads:
 
 ```sh
 python -m mousevasculature --sample LS025_ROI1 --analyze
