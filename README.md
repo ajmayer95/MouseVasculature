@@ -94,6 +94,21 @@ python -m mousevasculature --sample LS025_ROI1 --headless
 python -m mousevasculature /path/to/Filaments --headless
 ```
 
+## Vessel and network statistics
+
+```sh
+python -m mousevasculature --sample LS025_ROI1 --stats --color-by radius
+python -m mousevasculature --sample LS025_ROI1 --stats --fill-holes --color-by radius
+python -m mousevasculature /path/to/Filaments --stats --headless --fill-holes
+```
+
+Exports branch length, EDT radius, tortuosity, components, branching, graph cycles,
+bridges, volume fraction, density and orientation statistics, plus CSV tables and
+histograms. Small enclosed mask cavities can strongly affect skeletons; the optional
+hole-filled version is saved separately for comparison. See [statistics methods and
+QC guidance](docs/statistics.md) before interpreting values. Knot invariants are not
+implemented.
+
 ## Share the project
 
 The private repository is https://github.com/ajmayer95/MouseVasculature.

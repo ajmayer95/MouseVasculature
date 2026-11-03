@@ -80,7 +80,7 @@ def vectorize(skeleton, scale):
 
 
 def analyze(mask, scale):
-    skeleton = skeletonize(mask.astype(bool), method='lee').astype(np.uint8)
+    skeleton = (skeletonize(mask.astype(bool), method='lee') > 0).astype(np.uint8)
     return skeleton, vectorize(skeleton, scale)
 
 
@@ -95,25 +95,39 @@ def save_analysis(folder, stem, skeleton, graph, source):
           f"{len(graph['nodes']):,} nodes, {len(graph['edges']):,} paths", flush=True)
 
 
-def add_analysis_layers(viewer, skeleton, graph, scale, name, visible=True):
+def add_analysis_layers(viewer, skeleton, graph, scale, name, visible=True, color_by=None):
     layer = viewer.add_labels(skeleton, scale=scale, name=f'{name} skeleton',
                               rendering='iso_categorical', visible=False)
     layer.editable = False
     vectors, edge_ids = [], []
+    features = {'edge_id': edge_ids, 'length_um': [], 'radius_mean_um': [], 'component_id': []}
     for edge in graph['edges']:
         points = np.asarray(edge['points_zyx'], dtype=float)
         vectors.extend(np.stack((points[:-1], np.diff(points, axis=0)), axis=1))
         edge_ids.extend([edge['id']] * (len(points) - 1))
+        stats = edge.get('statistics', {})
+        for key in ('length_um', 'radius_mean_um', 'component_id'):
+            features[key].extend([stats.get(key, edge.get(key, 0))] * (len(points) - 1))
     if vectors:
+        colors = dict(length='length_um', radius='radius_mean_um', component='component_id')
         layer = viewer.add_vectors(np.asarray(vectors), ndim=3, scale=scale,
                                    vector_style='line',
-                                   edge_color='cyan', edge_width=2, opacity=1,
-                                   name=f'{name} centerlines', visible=visible,
-                                   features={'edge_id': edge_ids})
+                                   edge_color=colors.get(color_by, 'cyan'), edge_width=2, opacity=1,
+                                   edge_colormap='viridis',
+                                   name=f'{name} centerlines' + (f' ({colors[color_by]})' if color_by else ''), visible=visible,
+                                   features=features)
+        # napari 0.5.6's Qt controls select the first feature during creation.
+        # Reapply the requested mapping after the layer is attached to the viewer.
+        layer.edge_color = colors.get(color_by, 'cyan')
+        if color_by:
+            layer.edge_color_mode = 'cycle' if color_by == 'component' else 'colormap'
         layer.editable = False
     for kind, color in [('endpoint', 'yellow'), ('junction', 'magenta'),
                         ('isolated', 'white'), ('loop_anchor', 'orange')]:
-        points = [n['point_zyx'] for n in graph['nodes'] if n['kind'] == kind]
+        points = [n['point_zyx'] for n in graph['nodes']
+                  if n.get('kind', 'endpoint' if n.get('degree') == 1 else
+                           'junction' if n.get('degree', 0) >= 3 else
+                           'isolated' if n.get('degree') == 0 else 'loop_anchor') == kind]
         if points:
             layer = viewer.add_points(np.asarray(points), ndim=3, scale=scale,
                                       size=3, face_color=color, name=f'{name} {kind}',

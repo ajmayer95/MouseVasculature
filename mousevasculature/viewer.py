@@ -39,12 +39,22 @@ def main(argv=None):
                         help='TIFF file or folder (default: MOUSEVASC_DATA or ~/Downloads/Filaments)')
     parser.add_argument('--sample', help='Select a filename stem, e.g. LS025_ROI1')
     parser.add_argument('--analyze', action='store_true', help='Skeletonize, vectorize and display centerlines')
+    parser.add_argument('--stats', action='store_true', help='Measure branches and topology; save CSV, JSON and histograms')
+    parser.add_argument('--fill-holes', action='store_true', help='Fill enclosed 3D background cavities before analysis; save separately')
+    parser.add_argument('--color-by', choices=('length', 'radius', 'component'),
+                        help='Color measured branches by a statistic (implies --stats)')
     parser.add_argument('--headless', action='store_true', help='Analyze and export without a GUI')
     parser.add_argument('--output', type=Path, default=Path('results'), help='Analysis output directory')
     parser.add_argument('--scale', type=float, nargs=3, metavar=('Z', 'Y', 'X'), help='Override voxel sizes in µm')
     parser.add_argument('--inventory', type=Path, help='Write CSV summary without opening napari')
     parser.add_argument('--grid', action='store_true', help='Show ROIs side by side (uses more GPU memory)')
     args = parser.parse_args(argv)
+    if args.color_by:
+        args.stats = True
+    if args.stats:
+        args.analyze = True
+    if args.fill_holes:
+        args.analyze = True
     if args.headless:
         args.analyze = True
     if args.inventory and args.analyze:
@@ -60,6 +70,7 @@ def main(argv=None):
             parser.error('--sample must match exactly one file, e.g. LS025_ROI1')
     viewer = None
     rows = []
+    summaries = []
     if not args.inventory and not args.headless:
         import napari
         viewer = napari.Viewer(title='Mouse prostate vasculature', ndisplay=2)
@@ -81,13 +92,35 @@ def main(argv=None):
         if args.analyze:
             from .analysis import analyze, save_analysis, add_analysis_layers
             print(f'Skeletonizing and tracing {path.name}...', flush=True)
-            skeleton, graph = analyze(mask, scale)
-            save_analysis(args.output, path.stem, skeleton, graph, path)
+            analysis_mask = mask
+            if args.fill_holes:
+                from scipy.ndimage import binary_fill_holes
+                analysis_mask = binary_fill_holes(mask).astype(np.uint8)
+            stem = path.stem + ('_filled' if args.fill_holes else '')
+            skeleton, graph = analyze(analysis_mask, scale)
+            graph['preprocessing'] = dict(fill_enclosed_holes=args.fill_holes,
+                                          original_foreground_voxels=count,
+                                          added_voxels=int(analysis_mask.sum()) - count,
+                                          background_connectivity=6 if args.fill_holes else None)
+            save_analysis(args.output, stem, skeleton, graph, path)
+            if args.fill_holes:
+                np.savez_compressed(args.output / stem / 'analysis_mask.npz', mask=analysis_mask, voxel_size_um=scale)
+            if args.stats:
+                from .statistics import save_statistics
+                summary, graph = save_statistics(args.output / stem, path, analysis_mask, skeleton, graph)
+                summaries.append(summary)
             if viewer is not None:
                 layer.opacity = .2
                 layer.visible = False
+                if args.fill_holes:
+                    filled_layer = viewer.add_labels(analysis_mask, name=f'{path.stem} filled mask',
+                                                      scale=scale, opacity=.2, visible=False)
+                    filled_layer.editable = False
                 add_analysis_layers(viewer, skeleton, graph, scale, path.stem,
-                                    visible=index == 0)
+                                    visible=index == 0, color_by=args.color_by)
+    if summaries:
+        from .statistics import save_comparison
+        save_comparison(args.output, summaries)
     if args.inventory:
         args.inventory.parent.mkdir(parents=True, exist_ok=True)
         with args.inventory.open('w', newline='') as handle:

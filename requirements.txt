@@ -2,3 +2,6 @@ napari[pyqt5]==0.5.6
 numpy==1.26.4
 tifffile==2024.8.30
 scikit-image==0.24.0
+scipy==1.12.0
+networkx==3.2.1
+matplotlib==3.9.4
