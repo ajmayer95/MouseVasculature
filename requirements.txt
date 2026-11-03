@@ -1,3 +1,4 @@
 napari[pyqt5]==0.5.6
 numpy==1.26.4
 tifffile==2024.8.30
+scikit-image==0.24.0

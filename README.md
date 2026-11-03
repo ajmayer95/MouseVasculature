@@ -1,7 +1,7 @@
 # Mouse prostate vasculature
 
-First milestone: view binary filament masks as calibrated 3D volumes in napari.
-Future work: mask quality checks, skeleton and vessel graph extraction, radius estimation,
+View binary filament masks, skeletons and vector centerlines in napari.
+Future work: mask quality checks, radius estimation,
 and a flow model with explicit inlet/outlet conditions. Flow modeling is not implemented yet.
 
 ## Setup on a laptop
@@ -52,17 +52,58 @@ python -m unittest discover -s tests
 The inventory reports mask occupancy, not validated vascular volume or connectivity.
 Original masks remain at their source location and are excluded from Git.
 
-## Share the project
+## Skeletonize and vectorize a specific filament
 
-The local Git repository tracks code, documentation, and the inventory. To synchronize
-between computers, create an empty private remote repository, then:
+From the project folder, launch one ROI with the mask, centerline paths, endpoints,
+and junctions:
 
 ```sh
-git remote add origin <your-repository-url>
-git push -u origin main
+python -m mousevasculature --sample LS025_ROI1 --analyze
+```
+
+The default data folder is `~/Downloads/Filaments`. On another laptop, supply the
+folder or set the `MOUSEVASC_DATA` environment variable:
+
+```sh
+python -m mousevasculature /path/to/Filaments --sample LS027_ROI3 --analyze
+python -m mousevasculature /path/to/LS025_ROI1_Filaments.tif --analyze
+```
+
+Omit `--analyze` to view just the selected mask. Cyan paths are centerlines,
+yellow points are endpoints, and magenta points are junction voxels. Toggle the
+skeleton layer to see the voxel skeleton; it starts hidden. The mask and junction
+points also start hidden so the centerlines are visible; toggle them for comparison.
+All layers share the original physical calibration.
+
+Analysis uses scikit-image's 3D Lee thinning, followed by tracing chains of
+degree-two voxels under 26-neighbor connectivity. Redundant diagonal shortcuts are
+removed when an intermediate skeleton voxel provides a local route. Paths retain every skeleton voxel
+along the chain; there is no smoothing or pruning. Pure loops and isolated voxels
+are retained. Adjacent junction voxels remain separate graph nodes, which can create
+short edges around junctions. This is an initial voxel graph, not yet a validated
+anatomical vessel graph or flow network. Disconnected masks remain disconnected.
+Thinning operates in voxel space; physical spacing is applied to path lengths.
+
+Each run exports `results/<filename>/skeleton.npz` and `graph.json`. The NPZ stores
+the skeleton and voxel sizes. JSON stores nodes, edges, ZYX voxel coordinates,
+calibration in µm, and path lengths in µm. Results are excluded from Git.
+Re-running a sample replaces its previous results. To export without opening napari:
+
+```sh
+python -m mousevasculature --sample LS025_ROI1 --headless
+python -m mousevasculature /path/to/Filaments --headless
+```
+
+## Share the project
+
+The private repository is https://github.com/ajmayer95/MouseVasculature.
+After changes, synchronize with:
+
+```sh
+git push
 ```
 
 On the laptop run `git clone <your-repository-url>` and follow setup above. TIFF data
-must be transferred separately. No remote repository is configured automatically.
+must be transferred separately.
 
 Rendering uses napari's [3D labels layer](https://napari.org/howtos/layers/labels.html).

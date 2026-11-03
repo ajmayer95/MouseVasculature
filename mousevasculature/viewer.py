@@ -1,6 +1,7 @@
 """Read calibrated ImageJ masks and display separate ROIs in napari."""
 import argparse
 import csv
+import os
 from pathlib import Path
 
 import numpy as np
@@ -33,17 +34,33 @@ def load_mask(path, scale=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('path', type=Path, help='TIFF file or folder of TIFF masks')
+    parser.add_argument('path', type=Path, nargs='?',
+                        default=Path(os.environ.get('MOUSEVASC_DATA', Path.home() / 'Downloads' / 'Filaments')),
+                        help='TIFF file or folder (default: MOUSEVASC_DATA or ~/Downloads/Filaments)')
+    parser.add_argument('--sample', help='Select a filename stem, e.g. LS025_ROI1')
+    parser.add_argument('--analyze', action='store_true', help='Skeletonize, vectorize and display centerlines')
+    parser.add_argument('--headless', action='store_true', help='Analyze and export without a GUI')
+    parser.add_argument('--output', type=Path, default=Path('results'), help='Analysis output directory')
     parser.add_argument('--scale', type=float, nargs=3, metavar=('Z', 'Y', 'X'), help='Override voxel sizes in µm')
     parser.add_argument('--inventory', type=Path, help='Write CSV summary without opening napari')
     parser.add_argument('--grid', action='store_true', help='Show ROIs side by side (uses more GPU memory)')
     args = parser.parse_args(argv)
+    if args.headless:
+        args.analyze = True
+    if args.inventory and args.analyze:
+        parser.error('--inventory cannot be combined with analysis')
+    if args.grid and args.analyze:
+        parser.error('Analyze one sample at a time; grid is for masks only')
     paths = sorted(p for p in args.path.iterdir() if p.suffix.lower() in ('.tif', '.tiff')) if args.path.is_dir() else [args.path]
     if not paths or any(not p.is_file() for p in paths):
         parser.error('No TIFF files found')
+    if args.sample:
+        paths = [p for p in paths if p.stem in (args.sample, args.sample + '_Filaments')]
+        if len(paths) != 1:
+            parser.error('--sample must match exactly one file, e.g. LS025_ROI1')
     viewer = None
     rows = []
-    if not args.inventory:
+    if not args.inventory and not args.headless:
         import napari
         viewer = napari.Viewer(title='Mouse prostate vasculature', ndisplay=2)
         viewer.dims.axis_labels = ('Z', 'Y', 'X')
@@ -61,13 +78,23 @@ def main(argv=None):
             layer = viewer.add_labels(mask, name=path.stem, scale=scale, opacity=1,
                                       rendering='iso_categorical', visible=args.grid or index == 0)
             layer.editable = False
+        if args.analyze:
+            from .analysis import analyze, save_analysis, add_analysis_layers
+            print(f'Skeletonizing and tracing {path.name}...', flush=True)
+            skeleton, graph = analyze(mask, scale)
+            save_analysis(args.output, path.stem, skeleton, graph, path)
+            if viewer is not None:
+                layer.opacity = .2
+                layer.visible = False
+                add_analysis_layers(viewer, skeleton, graph, scale, path.stem,
+                                    visible=index == 0)
     if args.inventory:
         args.inventory.parent.mkdir(parents=True, exist_ok=True)
         with args.inventory.open('w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
-    else:
+    elif viewer is not None:
         viewer.dims.ndisplay = 3
         viewer.grid.enabled = args.grid
         viewer.scale_bar.visible = True
