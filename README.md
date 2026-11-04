@@ -102,8 +102,36 @@ python -m mousevasculature --sample LS025_ROI1 --stats --fill-holes --color-by r
 python -m mousevasculature /path/to/Filaments --stats --headless --fill-holes
 ```
 
+### Plug small mask tunnels
+
+```sh
+python -m mousevasculature --sample LS025_ROI1 --close-tunnels --highlight small-loops
+```
+
+`--close-tunnels` (implies `--fill-holes`) plugs holes a voxel or two wide that pass through
+vessels, keeping only patches that remove a tunnel without bridging vessels. Results go to
+`<sample>_filled_closed`. See [statistics methods](docs/statistics.md#plug-small-tunnels).
+
+### Highlight features in napari
+
+```sh
+python -m mousevasculature --sample LS025_ROI1 --fill-holes --highlight small-loops
+python -m mousevasculature --sample LS025_ROI1 --fill-holes --highlight bridges boundary bifurcations
+```
+
+Every `--stats` run adds hidden highlight layers; `--highlight` chooses which start visible:
+`small-loops` (red, loops <50 µm, with labelled markers), `loops` (blue, other looped
+branches), `bridges` (gray, tree-like branches), `boundary` (orange, crop-touching),
+`short` (yellow) and `bifurcations` (points colored by log2 Murray ratio, blue < 0 < red).
+Highlights draw over the mask. With small loops present, a **small loops** panel on the
+right steps through them (Next/Previous, or `n` / `Shift-N`), centres the camera, outlines
+the current loop in green and prints its kind, perimeter, size, branch ids and flags.
+Toggle napari's 2D button to see the slice through the loop centre; with
+`--highlight small-loops` the mask starts visible so the tunnel can be compared with it.
+
 Exports branch length, EDT radius, tortuosity, components, branching, graph cycles,
-bridges, volume fraction, density and orientation statistics, plus CSV tables and
+bridges, loop sizes, meshedness, bifurcation radius ratios and angles, tissue-to-vessel
+distance, volume fraction, density and orientation statistics, plus CSV tables and
 histograms. Small enclosed mask cavities can strongly affect skeletons; the optional
 hole-filled version is saved separately for comparison. See [statistics methods and
 QC guidance](docs/statistics.md) before interpreting values. Knot invariants are not

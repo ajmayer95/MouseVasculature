@@ -41,18 +41,29 @@ def main(argv=None):
     parser.add_argument('--analyze', action='store_true', help='Skeletonize, vectorize and display centerlines')
     parser.add_argument('--stats', action='store_true', help='Measure branches and topology; save CSV, JSON and histograms')
     parser.add_argument('--fill-holes', action='store_true', help='Fill enclosed 3D background cavities before analysis; save separately')
+    parser.add_argument('--close-tunnels', type=int, nargs='?', const=1, default=None, metavar='RADIUS',
+                        help='Plug small mask tunnels (closing radius in voxels, default 1) when this '
+                             'removes tunnels without bridging vessels; implies --fill-holes')
     parser.add_argument('--color-by', choices=('length', 'radius', 'component'),
                         help='Color measured branches by a statistic (implies --stats)')
+    parser.add_argument('--highlight', nargs='+', default=[], metavar='FEATURE',
+                        choices=('small-loops', 'loops', 'bridges', 'boundary', 'short', 'bifurcations'),
+                        help='With --stats, show these highlight layers: small-loops, loops, bridges, '
+                             'boundary, short, bifurcations (all are added, hidden, otherwise)')
     parser.add_argument('--headless', action='store_true', help='Analyze and export without a GUI')
     parser.add_argument('--output', type=Path, default=Path('results'), help='Analysis output directory')
     parser.add_argument('--scale', type=float, nargs=3, metavar=('Z', 'Y', 'X'), help='Override voxel sizes in µm')
     parser.add_argument('--inventory', type=Path, help='Write CSV summary without opening napari')
     parser.add_argument('--grid', action='store_true', help='Show ROIs side by side (uses more GPU memory)')
     args = parser.parse_args(argv)
-    if args.color_by:
+    if args.color_by or args.highlight:
         args.stats = True
     if args.stats:
         args.analyze = True
+    if args.close_tunnels is not None:
+        if args.close_tunnels < 1:
+            parser.error('--close-tunnels radius must be at least 1 voxel')
+        args.fill_holes = True
     if args.fill_holes:
         args.analyze = True
     if args.headless:
@@ -92,13 +103,24 @@ def main(argv=None):
         if args.analyze:
             from .analysis import analyze, save_analysis, add_analysis_layers
             print(f'Skeletonizing and tracing {path.name}...', flush=True)
-            analysis_mask = mask
+            from .preprocess import close_tunnels, fill_enclosed_holes
+            analysis_mask, closing = mask, {}
             if args.fill_holes:
-                from scipy.ndimage import binary_fill_holes
-                analysis_mask = binary_fill_holes(mask).astype(np.uint8)
-            stem = path.stem + ('_filled' if args.fill_holes else '')
+                analysis_mask = fill_enclosed_holes(mask)
+            if args.close_tunnels:
+                filled_voxels = int(analysis_mask.sum())
+                analysis_mask, closing = close_tunnels(analysis_mask, args.close_tunnels)
+                # Plugging a tunnel can enclose a cavity; fill again.
+                analysis_mask = fill_enclosed_holes(analysis_mask)
+                closing['voxels_added_after_fill'] = int(analysis_mask.sum()) - filled_voxels
+                print(f"Closed tunnels: {closing['accepted_patches']} patches accepted, "
+                      f"{closing['rejected_bridging_patches']} bridging patches rejected, "
+                      f"{closing['voxels_added_after_fill']} voxels added", flush=True)
+            analysis_mask = analysis_mask.astype(np.uint8)
+            stem = path.stem + ('_filled' if args.fill_holes else '') + ('_closed' if args.close_tunnels else '')
             skeleton, graph = analyze(analysis_mask, scale)
             graph['preprocessing'] = dict(fill_enclosed_holes=args.fill_holes,
+                                          close_tunnels=bool(args.close_tunnels), **closing,
                                           original_foreground_voxels=count,
                                           added_voxels=int(analysis_mask.sum()) - count,
                                           background_connectivity=6 if args.fill_holes else None)
@@ -113,11 +135,17 @@ def main(argv=None):
                 layer.opacity = .2
                 layer.visible = False
                 if args.fill_holes:
-                    filled_layer = viewer.add_labels(analysis_mask, name=f'{path.stem} filled mask',
+                    filled_layer = viewer.add_labels(analysis_mask, name=f'{path.stem} ' + ('repaired' if args.close_tunnels else 'filled') + ' mask',
                                                       scale=scale, opacity=.2, visible=False)
                     filled_layer.editable = False
                 add_analysis_layers(viewer, skeleton, graph, scale, path.stem,
                                     visible=index == 0, color_by=args.color_by)
+                if args.stats:
+                    from .features import add_feature_layers
+                    add_feature_layers(viewer, graph, scale, path.stem,
+                                       highlight=args.highlight if index == 0 else (), browser=index == 0)
+                    if 'small-loops' in args.highlight and index == 0:
+                        (filled_layer if args.fill_holes else layer).visible = True
     if summaries:
         from .statistics import save_comparison
         save_comparison(args.output, summaries)

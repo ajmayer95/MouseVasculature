@@ -30,6 +30,42 @@ versions for quality control. Original TIFFs are never modified. Processed masks
 are saved as `analysis_mask.npz` in a separate `<sample>_filled` results folder.
 Both original and filled masks remain available as hidden napari layers for comparison.
 
+## Plug small tunnels
+
+```sh
+python -m mousevasculature --sample LS025_ROI1 --close-tunnels --highlight small-loops
+python -m mousevasculature /path/to/Filaments --stats --headless --close-tunnels
+```
+
+Even after hole filling, these masks contain small tunnels: holes a few voxels wide
+that pass through a vessel. Each becomes a graph cycle (mostly two parallel branches
+around the hole, median ~8 µm across). `--close-tunnels [RADIUS]` (default 1 voxel; implies
+`--fill-holes`) plugs them before skeletonization:
+
+1. Fill enclosed cavities.
+2. A binary closing with a ball of RADIUS voxels proposes candidate patches; each
+   26-connected group of added voxels is one patch.
+3. A patch is kept only if it raises the mask's 26-connected Euler characteristic
+   (components − tunnels + cavities), i.e. it removes a tunnel. Patches that would join
+   separate vessel pieces lower it (they add a tunnel or merge components) and are
+   rejected. Patches that only smooth the surface leave it unchanged and are also
+   rejected, so the mask is otherwise untouched. The Euler change is computed exactly on
+   a crop around each patch, against the progressively repaired mask.
+4. Fill cavities again, since a plug can enclose one.
+
+Results go to `<sample>_filled_closed` with `analysis_variant` `filled+closed`; the
+repaired mask is `analysis_mask.npz`. `statistics.json` → `preprocessing` records candidate,
+accepted, bridging-rejected and neutral patches and voxels added.
+
+On these data (radius 1), 10–49 patches per ROI were accepted, adding 40–330 voxels
+(≤0.15% of foreground). Small loops fell from 410 to 12 in total while loops ≥50 µm changed
+by at most one per ROI. Graph cycle rank matched mask tunnel count in all 15 ROIs.
+Branch counts fell 20–45% and total length 1–5%. Radius 2 removed slightly more and added
+more voxels. Caveats: this assumes no real vessel loop encloses a hole only one or two
+voxels wide; a real loop that narrow cannot be distinguished from a defect at this
+resolution. Inspect the remaining small loops and any accepted plugs before relying on
+loop counts.
+
 ## Batch export
 
 ```sh
@@ -44,10 +80,14 @@ output folder. Original and filled variants have separate rows, labeled
 - `branches.csv`: one row per maximal branch, with length, chord distance,
   tortuosity, radius estimates, component, boundary flag, short-branch flag and bridge flag.
 - `components.csv`: component size, total branch length and independent cycle count.
+- `bifurcations.csv`: one row per three-branch node with parent and child radii, Murray ratio and exponent, child asymmetry, branching angle, and boundary/short/resolved flags.
+- `loops.csv`: one row per minimum-basis loop: kind (`cycle`, `parallel`, `self_loop`),
+  perimeter, extent, small flag, member branch ids, centroid (ZYX voxels), minimum radius
+  and crop/short flags.
 - `statistics.json`: distributions, network metrics, mask measurements, QC messages,
   preprocessing provenance and library versions. Undefined values are JSON null or
   empty CSV cells, not zero.
-- `statistics.png`: histograms for branch length, mean radius, tortuosity and node degree.
+- `statistics.png`: histograms for branch length, mean radius, tortuosity, node degree, minimum-basis loop length and resolved Murray ratio.
 - `branch_graph.json`: measured graph with centerline coordinates and a per-vertex
   radius profile. `graph.json` retains the original uncontracted voxel graph.
 - `skeleton.npz`: binary skeleton and calibrated voxel sizes.
@@ -107,7 +147,43 @@ Anisotropy is largest minus smallest eigenvalue (0 for isotropic orientation, 1 
 perfect alignment). Total branch length excludes higher-degree junction interiors;
 it should not be interpreted as a complete anatomical vascular length before QC.
 
-**Knotting.** A cycle is not evidence of a knot. These statistics do not compute knot
+**Loopiness.** `cycle_density_per_mm3` is cycle rank per ROI volume. `meshedness` is
+cycle rank divided by `2N - 5`, where N is the number of degree ≥3 nodes; that is the
+maximum for a planar graph, so in 3D use it only to compare ROIs. `looped_length_fraction`
+is the share of branch length that is not a bridge, i.e. that lies on at least one cycle.
+`loop_length_um` gives perimeters of an exact minimum-weight cycle basis (Horton's
+algorithm, solved per biconnected block; parallel branches and self-loops included).
+Basis size equals the cycle rank. networkx 3.2's `minimum_cycle_basis` returned
+non-minimal bases on these graphs, so it is not used. Loops shorter than 50 µm
+(`small_loops`) are often small tunnels through the mask, mostly parallel branch pairs
+and self-loops. In these data they are 30–65% of loops even after hole filling.
+`large_cycle_density_per_mm3` and `large_loop_length_um` exclude them; prefer these for
+comparisons. Loops cut by the crop are not closed and are not counted.
+
+**Hierarchy.** `bifurcations.csv` describes each node with exactly three distinct,
+non-loop branches. The widest branch by mean EDT radius is called the parent. This is
+a geometric convention, not a flow direction. `murray_ratio` is
+parent³ / (child₁³ + child₂³); 1 matches Murray's cube law and 0.5 means all three
+radii are equal. `murray_exponent` solves parent^x = child₁^x + child₂^x when it has a
+solution. `child_asymmetry` is the smaller/larger child radius, and `branching_angle_deg`
+is the angle between the two children's directions over their first 10 µm. A bifurcation
+is `resolved` when no branch touches the crop or is flagged short, and the smallest radius
+is at least two voxels (3.6 µm here). Murray and asymmetry summaries use resolved
+bifurcations only. Angle summaries exclude boundary and short branches.
+`radius_length_spearman` is the rank correlation of branch radius and length for interior
+branches. Radii are only about two voxels, so EDT discretization dominates radius ratios.
+Treat Murray values as descriptive, not as tests of the cube law. Strahler or diameter-defined
+orders are not computed: they need a tree or inlet/outlet assignment, which loopy cropped
+networks lack.
+
+**Tissue supply.** `tissue_distance_um` is the distribution of distance from every background
+voxel to the nearest foreground voxel. A vessel just outside the crop could be closer,
+so each value is an upper bound. `tissue_distance_exact_fraction` is the share of voxels
+whose distance is no larger than their distance past the ROI face, so their value is exact.
+This is about half of voxels in these ROIs, which mostly affects the upper percentiles and
+the maximum. Filled-variant cavities count as vessel.
+
+**Knotting and entanglement.** Not implemented yet. A cycle is not evidence of a knot. These statistics do not compute knot
 types or linking numbers. That needs explicit closed-curve selection, treatment of
 intersections/shared junctions, checks for self-intersections, and a closure policy
 for cropped/open curves. Graph cycles are the starting point for that later analysis.

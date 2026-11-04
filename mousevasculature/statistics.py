@@ -7,6 +7,7 @@ from pathlib import Path
 import networkx as nx
 import numpy as np
 from scipy import ndimage as ndi
+from scipy.stats import spearmanr
 from skimage.measure import euler_number
 
 
@@ -133,6 +134,189 @@ def merge_degree_two(graph, raw_graph):
                 degree_two_regions_merged=g.number_of_nodes() - len(kept_nodes))
 
 
+LOOP_FIELDS = ['loop_id', 'kind', 'length_um', 'extent_um', 'small', 'branch_ids', 'centroid_zyx',
+               'min_radius_um', 'touches_boundary', 'has_short_branch']
+BIFURCATION_FIELDS = ['node_id', 'component_id', 'parent_branch', 'child_branches',
+                      'parent_radius_um', 'child_radius_large_um', 'child_radius_small_um',
+                      'murray_ratio', 'murray_exponent', 'child_asymmetry', 'branching_angle_deg',
+                      'touches_boundary', 'has_short_branch', 'resolved']
+TANGENT_LENGTH_UM = 10.
+RESOLVED_RADIUS_VOXELS = 2.
+SMALL_LOOP_UM = 50.
+
+
+def minimum_loops(g):
+    """Return an exact minimum-weight cycle basis as loops of branch ids.
+
+    Self-loops and parallel branches are subdivided into three equal segments so that
+    a simple weighted graph represents the multigraph exactly. Bridges and tree-like
+    parts are removed first, and each biconnected block is solved separately.
+    Basis size equals the cycle rank. Each loop is classified as `self_loop` (one
+    branch), `parallel` (two branches joining the same two nodes) or `cycle`.
+    """
+    simple = nx.Graph()
+    for a, b, key, d in g.edges(keys=True, data=True):
+        if a != b and g.number_of_edges(a, b) == 1:
+            simple.add_edge(a, b, weight=d['length_um'], branch=key)
+            continue
+        m0, m1, w = ('branch', key, 0), ('branch', key, 1), d['length_um'] / 3
+        simple.add_edge(a, m0, weight=w, branch=key)
+        simple.add_edge(m0, m1, weight=w, branch=key)
+        simple.add_edge(m1, b, weight=w, branch=key)
+    loops = []
+    for block in nx.biconnected_components(simple):
+        if len(block) < 3:
+            continue
+        sub = simple.subgraph(block)
+        edges = list(sub.edges(data='branch'))
+        for weight, bits in horton_cycle_basis(sub):
+            branches = sorted({edges[i][2] for i in range(bits.bit_length()) if bits >> i & 1})
+            kind = 'self_loop' if len(branches) == 1 else 'parallel' if len(branches) == 2 else 'cycle'
+            loops.append(dict(length_um=weight, branch_ids=branches, kind=kind))
+    loops.sort(key=lambda loop: loop['length_um'])
+    for i, loop in enumerate(loops):
+        loop['loop_id'] = i
+    return loops
+
+
+def loop_lengths(g):
+    """Perimeters of a minimum-weight cycle basis, ascending."""
+    return [loop['length_um'] for loop in minimum_loops(g)]
+
+
+def horton_cycle_basis(graph):
+    """Exact minimum cycle basis of a connected simple graph (Horton, 1987).
+
+    Returns (weight, bitmask) pairs; bit i is the i-th edge of graph.edges().
+    networkx 3.2's minimum_cycle_basis returned non-minimal bases on these graphs.
+    Candidates are shortest-path cycles through each vertex and edge; they are added
+    greedily by weight when independent over GF(2).
+    """
+    edge_bit = {frozenset(e): i for i, e in enumerate(graph.edges())}
+    rank = graph.number_of_edges() - graph.number_of_nodes() + 1
+    candidates = []
+    for v in graph:
+        distance, paths = nx.single_source_dijkstra(graph, v, weight='weight')
+        for x, y, d in graph.edges(data=True):
+            px, py = paths[x], paths[y]
+            if px[-2:-1] == [y] or py[-2:-1] == [x] or set(px) & set(py) != {v}:
+                continue
+            cycle = px + py[::-1]
+            bits = 0
+            for a, b in zip(cycle[:-1], cycle[1:]):
+                bits |= 1 << edge_bit[frozenset((a, b))]
+            candidates.append((distance[x] + distance[y] + d['weight'], bits))
+    candidates.sort(key=lambda c: c[0])
+    pivots, basis, seen = {}, [], set()
+    for weight, original in candidates:
+        if original in seen:
+            continue
+        seen.add(original)
+        bits = original
+        while bits:
+            top = bits.bit_length() - 1
+            if top not in pivots:
+                pivots[top] = bits
+                basis.append((float(weight), original))
+                break
+            bits ^= pivots[top]
+        if len(basis) == rank:
+            break
+    return basis
+
+
+def describe_loops(loops, branch_graph, rows, scale):
+    """Add centroid, extent and crop/short flags to each loop."""
+    by_id = {e['id']: e for e in branch_graph['edges']}
+    stats = {r['branch_id']: r for r in rows}
+    for loop in loops:
+        points = np.concatenate([np.asarray(by_id[b]['points_zyx'], dtype=float) for b in loop['branch_ids']])
+        centroid = points.mean(axis=0)
+        loop['centroid_zyx'] = centroid.tolist()
+        loop['extent_um'] = float(2 * np.linalg.norm((points - centroid) * scale, axis=1).max())
+        loop['small'] = loop['length_um'] < SMALL_LOOP_UM
+        loop['touches_boundary'] = any(stats[b]['touches_boundary'] for b in loop['branch_ids'])
+        loop['has_short_branch'] = any(stats[b]['short_branch'] for b in loop['branch_ids'])
+        loop['min_radius_um'] = min(stats[b]['radius_min_um'] for b in loop['branch_ids'])
+    return loops
+
+
+def tangent(points, scale, length_um=TANGENT_LENGTH_UM):
+    """Unit direction from the first point to the point about length_um along the centerline."""
+    points = np.asarray(points, dtype=float) * scale
+    arc = np.concatenate([[0.], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+    end = points[min(int(np.searchsorted(arc, length_um)), len(points) - 1)]
+    vector = end - points[0]
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm else None
+
+
+def murray_exponent(parent, large, small):
+    """Solve parent^x = large^x + small^x; None if no finite positive solution exists."""
+    from scipy.optimize import brentq
+    if min(parent, large, small) <= 0 or parent <= large:
+        return None
+    f = lambda x: 1 - (large / parent) ** x - (small / parent) ** x
+    return float(brentq(f, 1e-6, 200)) if f(200) > 0 else None
+
+
+def bifurcations(g, branch_graph, rows, scale, membership):
+    """Describe each simple three-branch node. The widest branch is called the parent.
+
+    This is a geometric convention, not a flow direction.
+    """
+    by_id = {e['id']: e for e in branch_graph['edges']}
+    stats = {r['branch_id']: r for r in rows}
+    resolved_radius = RESOLVED_RADIUS_VOXELS * float(np.min(scale))
+    result = []
+    for node in sorted(g):
+        edges = [k for *_, k in g.edges(node, keys=True)]
+        if len(edges) != 3 or len(set(edges)) != 3 or any(by_id[k]['source'] == by_id[k]['target'] for k in edges):
+            continue
+        ordered = sorted(edges, key=lambda k: -stats[k]['radius_mean_um'])
+        parent, large, small = (stats[k]['radius_mean_um'] for k in ordered)
+        directions = []
+        for k in ordered[1:]:
+            e = by_id[k]
+            points = e['points_zyx'] if e['source'] == node else e['points_zyx'][::-1]
+            directions.append(tangent(points, scale))
+        angle = (float(np.degrees(np.arccos(np.clip(directions[0] @ directions[1], -1, 1))))
+                 if all(d is not None for d in directions) else None)
+        boundary = any(stats[k]['touches_boundary'] for k in edges)
+        short = any(stats[k]['short_branch'] for k in edges)
+        result.append(dict(node_id=node, component_id=membership[node], parent_branch=ordered[0],
+                           child_branches=' '.join(map(str, ordered[1:])),
+                           parent_radius_um=parent, child_radius_large_um=large, child_radius_small_um=small,
+                           murray_ratio=parent ** 3 / (large ** 3 + small ** 3),
+                           murray_exponent=murray_exponent(parent, large, small),
+                           child_asymmetry=small / large, branching_angle_deg=angle,
+                           touches_boundary=boundary, has_short_branch=short,
+                           resolved=bool(not boundary and not short and small >= resolved_radius)))
+    return result
+
+
+def tissue_distance(mask, scale):
+    """Distance from each background voxel to the nearest foreground voxel, in µm.
+
+    Vessels outside the crop are unknown, so each value is an upper bound. It is exact
+    when no point outside the ROI could be closer than the measured distance.
+    """
+    mask = mask.astype(bool)
+    if not mask.any() or mask.all():
+        return distribution([]), None
+    distance = ndi.distance_transform_edt(~mask, sampling=scale)
+    face = None
+    for axis, (n, s) in enumerate(zip(mask.shape, scale)):
+        index = np.arange(n, dtype=float)
+        d = np.minimum(index + 1, n - index) * s
+        d = d.reshape([-1 if i == axis else 1 for i in range(3)])
+        face = d if face is None else np.minimum(face, d)
+    background = ~mask
+    values = distance[background]
+    exact = float(np.mean(values <= np.broadcast_to(face, mask.shape)[background]))
+    return distribution(values), exact
+
+
 def measure(mask, skeleton, raw_graph):
     scale = np.asarray(raw_graph['voxel_size_um'])
     contracted = contract_junctions(raw_graph)
@@ -192,7 +376,7 @@ def measure(mask, skeleton, raw_graph):
     if any(r['touches_boundary'] for r in rows):
         warnings.append('Boundary-touching branches are crop-censored; radii near crop faces use padded background.')
     warnings.append('EDT radii estimate distance to background in the supplied mask, not lumen radius unless masks represent filled vessels.')
-    summary = dict(schema_version=1, voxel_size_um=scale.tolist(), roi_volume_um3=roi_volume,
+    summary = dict(schema_version=2, voxel_size_um=scale.tolist(), roi_volume_um3=roi_volume,
                    foreground_volume_um3=float(foreground * np.prod(scale)),
                    foreground_fraction=foreground / mask.size,
                    mask_components_26=int(count), largest_mask_component_fraction=float(sizes.max() / foreground) if foreground else None,
@@ -231,7 +415,61 @@ def measure(mask, skeleton, raw_graph):
     summary['graph_minus_mask_tunnel_count'] = (summary['independent_cycles'] - summary['filled_mask_tunnel_count']) if filled else None
     if filled and summary['graph_minus_mask_tunnel_count'] != 0:
         warnings.append('Graph cycle rank differs from filled-mask tunnel count: inspect junction contraction and voxel connectivity before interpreting topology.')
+
+    # Loopiness
+    branch_nodes = summary['branch_nodes']
+    loop_records = describe_loops(minimum_loops(g), branch_graph, rows, scale)
+    loops = [loop['length_um'] for loop in loop_records]
+    summary['cycle_density_per_mm3'] = summary['independent_cycles'] / roi_volume * 1e9
+    summary['meshedness'] = summary['independent_cycles'] / (2 * branch_nodes - 5) if branch_nodes >= 3 else None
+    summary['looped_length_fraction'] = sum(r['length_um'] for r in rows if not r['bridge']) / length if length else None
+    summary['loop_length_um'] = distribution(loops)
+    large_loops = [x for x in loops if x >= SMALL_LOOP_UM]
+    summary['small_loop_threshold_um'] = SMALL_LOOP_UM
+    summary['small_loops'] = len(loops) - len(large_loops)
+    summary['large_cycle_density_per_mm3'] = len(large_loops) / roi_volume * 1e9
+    summary['large_loop_length_um'] = distribution(large_loops)
+    if loops and summary['small_loops'] / len(loops) > .25:
+        warnings.append(f'Over 25% of minimum-basis loops are shorter than {SMALL_LOOP_UM:g} µm; '
+                        'small mask tunnels may inflate cycle counts. Compare large_cycle_density_per_mm3.')
+
+    # Hierarchy
+    junctions = bifurcations(g, branch_graph, rows, scale, membership)
+    resolved = [b for b in junctions if b['resolved']]
+    summary['bifurcations'] = len(junctions)
+    summary['resolved_bifurcations'] = len(resolved)
+    summary['resolved_radius_threshold_um'] = RESOLVED_RADIUS_VOXELS * float(scale.min())
+    summary['murray_ratio'] = distribution([b['murray_ratio'] for b in resolved])
+    summary['murray_exponent'] = distribution([b['murray_exponent'] for b in resolved])
+    summary['murray_exponent_unsolved'] = sum(b['murray_exponent'] is None for b in resolved)
+    summary['child_asymmetry'] = distribution([b['child_asymmetry'] for b in resolved])
+    summary['branching_angle_deg'] = distribution([b['branching_angle_deg'] for b in junctions
+                                                   if not b['touches_boundary'] and not b['has_short_branch']])
+    interior = [r for r in rows if not r['touches_boundary'] and not r['self_loop']]
+    summary['radius_length_spearman'] = (float(spearmanr([r['radius_mean_um'] for r in interior],
+                                                         [r['length_um'] for r in interior])[0])
+                                         if len(interior) >= 3 else None)
+    if summary['radius_length_spearman'] is not None and not np.isfinite(summary['radius_length_spearman']):
+        summary['radius_length_spearman'] = None
+    branch_graph['bifurcations'] = junctions
+    branch_graph['loop_lengths_um'] = loops
+    branch_graph['loops'] = loop_records
+    summary['loop_kinds'] = {k: sum(l['kind'] == k for l in loop_records) for k in ('cycle', 'parallel', 'self_loop')}
+    summary['small_loop_kinds'] = {k: sum(l['kind'] == k and l['small'] for l in loop_records) for k in ('cycle', 'parallel', 'self_loop')}
+
+    # Tissue supply
+    summary['tissue_distance_um'], summary['tissue_distance_exact_fraction'] = tissue_distance(mask, scale)
+    if summary['tissue_distance_exact_fraction'] is not None and summary['tissue_distance_exact_fraction'] < .9:
+        warnings.append('Over 10% of tissue-to-vessel distances are crop-limited upper bounds.')
+    if junctions and len(resolved) < 10:
+        warnings.append('Fewer than 10 resolved bifurcations: Murray statistics are unreliable.')
     return summary, rows, component_rows, branch_graph
+
+
+def variant(preprocessing):
+    if preprocessing.get('close_tunnels'):
+        return 'filled+closed'
+    return 'filled' if preprocessing.get('fill_enclosed_holes') else 'original'
 
 
 def write_csv(path, rows, fields):
@@ -246,13 +484,17 @@ def save_statistics(folder, source, mask, skeleton, graph, plots=True):
     folder.mkdir(parents=True, exist_ok=True)
     summary, rows, components, branch_graph = measure(mask, skeleton, graph)
     summary['source_file'] = Path(source).name
-    summary['analysis_variant'] = 'filled' if summary['preprocessing'].get('fill_enclosed_holes') else 'original'
+    summary['analysis_variant'] = variant(summary['preprocessing'])
     (folder / 'statistics.json').write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
     (folder / 'branch_graph.json').write_text(json.dumps(branch_graph, indent=2, allow_nan=False) + '\n')
     write_csv(folder / 'branches.csv', rows, BRANCH_FIELDS)
     write_csv(folder / 'components.csv', components, ['component_id', 'nodes', 'branches', 'independent_cycles', 'length_um'])
+    write_csv(folder / 'bifurcations.csv', branch_graph['bifurcations'], BIFURCATION_FIELDS)
+    write_csv(folder / 'loops.csv', [dict(l, branch_ids=' '.join(map(str, l['branch_ids'])),
+                                          centroid_zyx=' '.join(f'{v:.1f}' for v in l['centroid_zyx']))
+                                     for l in branch_graph['loops']], LOOP_FIELDS)
     if plots:
-        plot_statistics(folder / 'statistics.png', rows, summary)
+        plot_statistics(folder / 'statistics.png', rows, summary, branch_graph)
     print(f"Statistics: {len(rows)} branches, {summary['components']} components, "
           f"{summary['independent_cycles']} independent graph cycles", flush=True)
     for warning in summary['warnings']:
@@ -260,25 +502,37 @@ def save_statistics(folder, source, mask, skeleton, graph, plots=True):
     return summary, branch_graph
 
 
-def plot_statistics(path, rows, summary):
+def plot_statistics(path, rows, summary, branch_graph=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(2, 2, figsize=(10, 7))
-    for ax, key, label in zip(axes.flat[:3], ['length_um', 'radius_mean_um', 'tortuosity'],
+    fig, axes = plt.subplots(2, 3, figsize=(14, 7))
+    resolved = [b for b in (branch_graph or {}).get('bifurcations', []) if b['resolved']]
+    for ax, key, label in zip([axes[0, 0], axes[0, 1], axes[0, 2]], ['length_um', 'radius_mean_um', 'tortuosity'],
                              ['Branch length (µm)', 'EDT radius, branch mean (µm)', 'Tortuosity (length / chord)']):
         values = [r[key] for r in rows if r[key] is not None]
         ax.hist(values, bins=min(40, max(1, int(np.sqrt(len(values))))), color='#147d92')
         ax.set(xlabel=label, ylabel='Branches')
         ax.text(.98, .95, f'n={len(values)}', transform=ax.transAxes, ha='right', va='top')
     degrees = summary['degree_histogram']
-    axes[1, 1].bar([int(k) for k in degrees], list(degrees.values()), color='#7956a0')
-    axes[1, 1].set(xlabel='Node degree (self-loop contributes 2)', ylabel='Nodes')
+    axes[1, 0].bar([int(k) for k in degrees], list(degrees.values()), color='#7956a0')
+    axes[1, 0].set(xlabel='Node degree (self-loop contributes 2)', ylabel='Nodes')
+    for ax, values, label, color in [
+            (axes[1, 1], (branch_graph or {}).get('loop_lengths_um', []), 'Minimum-basis loop length (µm)', '#147d92'),
+            (axes[1, 2], [np.log2(b['murray_ratio']) for b in resolved], 'log2 Murray ratio, resolved (0 = cube law)', '#a35328')]:
+        ax.hist(values, bins=min(40, max(1, int(np.sqrt(len(values))))), color=color)
+        ax.set(xlabel=label, ylabel='Count')
+        ax.text(.98, .95, f'n={len(values)}', transform=ax.transAxes, ha='right', va='top')
+    axes[1, 2].axvline(0, color='0.3', lw=1, ls='--')
     fig.suptitle(summary['source_file'] + f" ({summary['analysis_variant']})" + '\nExploratory statistics after junction-region contraction')
     fig.text(.5, .015, 'Includes short and crop-boundary branches. EDT radius assumes filled vessel masks. See statistics.json QC.', ha='center', fontsize=9)
     fig.tight_layout(rect=(0, .04, 1, .94))
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+DISTRIBUTIONS = ('length_um', 'radius_mean_um', 'tortuosity', 'loop_length_um', 'large_loop_length_um', 'murray_ratio',
+                 'murray_exponent', 'child_asymmetry', 'branching_angle_deg', 'tissue_distance_um')
 
 
 def save_comparison(folder, summaries):
@@ -290,8 +544,10 @@ def save_comparison(folder, summaries):
     rows = []
     for s in summaries:
         row = {k: v for k, v in s.items() if not isinstance(v, (dict, list))}
-        for key in ('length_um', 'radius_mean_um', 'tortuosity'):
-            row.update({f'{key}_{stat}': value for stat, value in s[key].items()})
+        for key in DISTRIBUTIONS:
+            row.update({f'{key}_{stat}': value for stat, value in s.get(key, {}).items()})
+        for key in ('loop_kinds', 'small_loop_kinds'):
+            row.update({f'{key}_{kind}': n for kind, n in s.get(key, {}).items()})
         row['qc_warnings'] = ' | '.join(s['warnings'])
         row['fill_enclosed_holes'] = s.get('preprocessing', {}).get('fill_enclosed_holes', False)
         row['added_voxels'] = s.get('preprocessing', {}).get('added_voxels', 0)
@@ -308,12 +564,14 @@ def plot_comparison(path, rows):
     import matplotlib.pyplot as plt
     sources = sorted({r['source_file'] for r in rows})
     positions = {s: i for i, s in enumerate(sources)}
-    fig, axes = plt.subplots(1, 4, figsize=(14, max(5, len(sources) * .35)), sharey=True)
-    variants = [('original', '^', '#a35328'), ('filled', 'o', '#147d92')]
+    fig, axes = plt.subplots(1, 7, figsize=(22, max(5, len(sources) * .35)), sharey=True)
+    variants = [('original', '^', '#a35328'), ('filled', 'o', '#147d92'), ('filled+closed', 's', '#4a3aa8')]
     for ax, key, label in zip(axes, ['length_density_mm_per_mm3', 'radius_mean_um_median',
-                                   'tortuosity_median', 'independent_cycles'],
+                                   'tortuosity_median', 'large_cycle_density_per_mm3', 'looped_length_fraction',
+                                   'murray_ratio_median', 'tissue_distance_um_median'],
                              ['Length density (mm/mm³)', 'Median branch EDT radius (µm)',
-                              'Median branch tortuosity', 'Independent graph cycles']):
+                              'Median branch tortuosity', 'Loops ≥50 µm per mm³', 'Length fraction in loops',
+                              'Median Murray ratio (resolved)', 'Median tissue–vessel distance (µm)']):
         for variant, marker, color in variants:
             selected = [r for r in rows if r.get('analysis_variant', 'original') == variant and r.get(key) is not None]
             ax.scatter([r[key] for r in selected], [positions[r['source_file']] for r in selected],
@@ -322,7 +580,8 @@ def plot_comparison(path, rows):
         ax.grid(axis='x', alpha=.2)
     axes[0].set_yticks(range(len(sources)), [s.replace('_Filaments.tif', '') for s in sources])
     axes[0].invert_yaxis()
-    axes[-1].legend(title='Mask variant', fontsize=8)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, title='Mask variant', fontsize=8, loc='upper right', ncol=2)
     fig.suptitle('Mouse prostate vasculature — exploratory ROI statistics')
     fig.text(.5, .015, 'ROIs are not independent mice. Original-mask cavities can strongly bias graph measurements; review QC before comparisons.', ha='center', fontsize=9)
     fig.tight_layout(rect=(0, .05, 1, .94))
