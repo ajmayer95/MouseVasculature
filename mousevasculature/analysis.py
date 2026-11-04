@@ -96,8 +96,9 @@ def save_analysis(folder, stem, skeleton, graph, source):
 
 
 def add_analysis_layers(viewer, skeleton, graph, scale, name, visible=True, color_by=None):
-    layer = viewer.add_labels(skeleton, scale=scale, name=f'{name} skeleton',
-                              rendering='iso_categorical', visible=False)
+    # napari 0.5.6 errors on thumbnails of 3D labels created hidden; create visible, then hide.
+    layer = viewer.add_labels(skeleton, scale=scale, name=f'{name} skeleton', rendering='iso_categorical')
+    layer.visible = False
     layer.editable = False
     vectors, edge_ids = [], []
     features = {'edge_id': edge_ids, 'length_um': [], 'radius_mean_um': [], 'component_id': []}

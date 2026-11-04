@@ -113,9 +113,18 @@ Chord is the distance between attachment endpoints. Tortuosity is length/chord;
 a straight branch is 1. Closed/self-loop branches have undefined tortuosity and
 are excluded from its distribution. Digital steps can bias length and tortuosity;
 there is no smoothing. Branches shorter than three times the smallest voxel spacing
-are flagged. Any path touching an ROI face is crop-censored and flagged. Interior-only
-length distributions are also included. Endpoints are graph endpoints, not identified
-anatomical inlets or outlets.
+are flagged. A branch is crop-censored (`touches_boundary`) when its vessel reaches an ROI
+face: some centerline point lies within its EDT radius plus one voxel of the face. Thinning
+pulls skeleton ends back from a cut face by about the vessel radius, so testing only for a
+centerline voxel on the face misses most cut vessels (schema 2 and earlier did this and
+flagged ~1% of branches). Endpoints are split into `crop_endpoints` and
+`interior_endpoints`. An end counts as crop-cut when the gap between its vessel surface
+(centerline distance minus radius) and the nearest face is at most 20 µm
+(`crop_end_margin_um`). The margin is empirical: of the ends that do not reach a face,
+80% stop within 20 µm of one, against about 22% expected by chance in a 500 µm cube, so
+tracing evidently stops just inside the cube edge. The remaining interior ends (a few per
+ROI) are candidate true dead ends, tracing stops or gaps worth inspecting. Interior-only length distributions are also included. Endpoints
+are graph endpoints, not identified anatomical inlets or outlets.
 
 **Radius.** The calibrated Euclidean distance transform estimates distance from a
 centerline voxel center to the nearest background voxel center. It assumes a filled
@@ -189,7 +198,16 @@ intersections/shared junctions, checks for self-intersections, and a closure pol
 for cropped/open curves. Graph cycles are the starting point for that later analysis.
 
 Compare ROI distributions first. Filenames suggest ROIs grouped within specimens;
-confirm the specimen/group mapping before statistical comparisons. Multiple ROIs
+confirm the specimen/group mapping before statistical comparisons.
+
+**Overlapping ROIs.** The TIFFs carry no stage positions. A search over all 3D shifts
+between every ROI pair (mask Dice score, cross-specimen pairs as controls) found one
+overlap: LS026_ROI1 voxels Z 0–84, Y 239–278, X 146–278 show the same vessels as LS026_ROI5
+voxels Z 166–250, Y 0–39, X 0–132 (about 2% of each cube; full-resolution Dice 0.75, with
+some vessels traced in only one). That corner is counted twice when both ROIs are pooled,
+and it measures agreement between two independent tracings of the same tissue. No other
+pair scored above the cross-specimen controls; overlaps under about 2% of a cube would not
+be detected. Multiple ROIs
 from one mouse are not independent biological replicates. No group p-values are
 computed automatically.
 

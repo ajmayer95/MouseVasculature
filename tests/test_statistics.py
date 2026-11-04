@@ -160,3 +160,46 @@ class ExtendedMetricTests(unittest.TestCase):
         self.assertEqual(stats['n'], 1)
         self.assertEqual(stats['mean'], 1)
         self.assertEqual(exact, 1)
+
+
+class CropFaceTests(unittest.TestCase):
+    def test_vessel_ending_near_face_is_crop_cut(self):
+        from mousevasculature.statistics import reaches_face
+        shape, scale = (40, 40, 40), np.array([2., 1.8, 1.8])
+        points = np.array([[20, 20, x] for x in range(2, 30)])
+        radii = np.full(len(points), 4.)
+        flags = reaches_face(points, radii, shape, scale)
+        self.assertTrue(flags[0])        # x = 2: 2.5 voxels × 1.8 µm = 4.5 µm ≤ radius 4 + one voxel 2 µm
+        self.assertFalse(flags[1])       # x = 3: 6.3 µm > 6 µm
+        self.assertFalse(flags[-1])      # x = 29: 10.5 voxels from the far face
+        self.assertFalse(reaches_face(np.array([[20, 20, 20]]), [4.], shape, scale)[0])
+
+    def test_measure_flags_skeleton_retracted_from_face(self):
+        mask = np.zeros((20, 20, 30), dtype=bool)
+        mask[7:14, 7:14, 0:20] = True    # square rod cut by the x = 0 face
+        skeleton = np.zeros_like(mask)
+        skeleton[10, 10, 3:17] = True     # thinning leaves the end 3 voxels from the face
+        summary, rows, _, _ = measure(mask, skeleton, vectorize(skeleton, (1, 1, 1)))
+        self.assertTrue(rows[0]['touches_boundary'])
+        # In this small 20×20×30-voxel volume every point is within the 20 µm end margin of some face.
+        self.assertEqual((summary['crop_endpoints'], summary['interior_endpoints']), (2, 0))
+
+    def test_end_far_from_faces_is_interior(self):
+        mask = np.zeros((60, 60, 80), dtype=bool)
+        mask[28:33, 28:33, 0:50] = True   # enters through x = 0, ends at x = 49, ~30 voxels from other faces
+        skeleton = np.zeros_like(mask)
+        skeleton[30, 30, 3:47] = True
+        summary, _, _, _ = measure(mask, skeleton, vectorize(skeleton, (1, 1, 1)))
+        self.assertEqual((summary['crop_endpoints'], summary['interior_endpoints']), (1, 1))
+
+
+class CalibrationTests(unittest.TestCase):
+    def test_calibration_file_overrides_tiff_and_scale_overrides_file(self):
+        import json
+        from mousevasculature.viewer import calibration_override, voxel_size
+        with tempfile.TemporaryDirectory() as tmp:
+            cal = Path(tmp) / 'calibration.json'
+            cal.write_text(json.dumps(dict(files={'A_*.tif': dict(voxel_size_um_zyx=[2, 1.8, 1.8], source='test')})))
+            self.assertEqual(calibration_override('A_1.tif', cal), ((2., 1.8, 1.8), 'test'))
+            self.assertEqual(calibration_override('B_1.tif', cal), (None, None))
+        self.assertEqual(voxel_size('ignored.tif', (1, 2, 3)), (1., 2., 3.))

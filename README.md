@@ -40,9 +40,13 @@ Use one TIFF path to load only that ROI, or add `--grid` to compare all ROIs sid
 side. Grid placement is a display arrangement, not anatomical registration.
 All 15 volumes require about 290 MB of mask arrays, plus loading and GPU overhead.
 
-ImageJ spacing and TIFF X/Y resolution are read per file in Z,Y,X order, in µm.
-Files without supported calibration fail explicitly. Override with known sizes using
-`--scale 1.8 1.8 1.8`. Do not infer physical sizes from array dimensions.
+Voxel sizes (Z, Y, X in µm) come from, in order: `--scale Z Y X`, then
+[calibration.json](calibration.json), then the TIFF's ImageJ spacing and X/Y resolution.
+Files with none of these fail explicitly. **The LS025–LS027 TIFFs record a Z spacing of
+1.8 µm, but the cubes were acquired at 2 µm** (250 slices × 2 µm = 500 µm, matching
+278 × 1.8 µm in X and Y). `calibration.json` corrects this to 2.0 × 1.8 × 1.8 µm; add an
+entry there for new data rather than relying on TIFF metadata. Saved results are reused
+only when their voxel size matches the current calibration.
 
 ```sh
 python -m mousevasculature /path/to/Filaments --inventory reports/masks.csv
@@ -111,6 +115,39 @@ python -m mousevasculature --sample LS025_ROI1 --close-tunnels --highlight small
 `--close-tunnels` (implies `--fill-holes`) plugs holes a voxel or two wide that pass through
 vessels, keeping only patches that remove a tunnel without bridging vessels. Results go to
 `<sample>_filled_closed`. See [statistics methods](docs/statistics.md#plug-small-tunnels).
+
+### Explore a network interactively
+
+```sh
+python -m mousevasculature --explore                          # first sample, filled+closed
+python -m mousevasculature --explore --sample LS027_ROI5 --variant original
+```
+
+`--explore` reuses saved results in `results/` when they are complete and current, so
+a sample opens in a few seconds; otherwise it runs the analysis first. The **Data**
+panel switches sample and mask variant (`original`, `filled`, `filled+closed`) without
+restarting. The **explorer** panel offers:
+
+- **Vessel surface.** A smoothed mesh of the analysed mask (Gaussian σ = 0.8 voxel,
+  display only), coloured by the nearest branch's radius, length, tortuosity, smallest
+  loop perimeter, component, loop/bridge/crop class or a random per-branch colour. The
+  bar under the menu shows the colour range (2nd–98th percentile); grey means no value.
+- **Click a vessel** to select its branch (drag still rotates); **Shift-click** adds or
+  removes branches. The panel lists length, chord, tortuosity, radius, the end nodes
+  (degree, Murray ratio, angle), bridge/crop/short flags, its basis loops and the
+  shortest loop through it. **Loops through branch**, **Shortest loop**, **Component**
+  and **Path between selected** draw on top of the surface and zoom to the result.
+- **Slab.** Clip every layer to a thick slice along Z, Y, X or the current view
+  direction; set its centre and thickness in µm. Clicks only select vessels inside it.
+- **Loops.** Filter (all, large, small, interior, crop-touching, annotated or not), step
+  with **Previous/Next** (`n` / `Shift-N`) or **Go to loop**.
+- **Annotate loops** as real, artifact or unsure with the buttons or keys `1`/`2`/`3`.
+  Labels are saved immediately to `results/<sample>_<variant>/loop_annotations.csv` with
+  the loop's branch ids, perimeter and centroid. Saved labels are reloaded only while the
+  loop still has the same branches; re-running the analysis can change loop ids.
+
+Hover does not show values (a napari 0.5.6 limitation in 3D); click instead. Number keys
+apply when the surface layer is selected; select it again if another layer captures them.
 
 ### Highlight features in napari
 

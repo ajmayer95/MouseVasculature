@@ -143,6 +143,9 @@ BIFURCATION_FIELDS = ['node_id', 'component_id', 'parent_branch', 'child_branche
 TANGENT_LENGTH_UM = 10.
 RESOLVED_RADIUS_VOXELS = 2.
 SMALL_LOOP_UM = 50.
+# Vessel ends this close to a face (beyond their radius) are counted as crop-cut: in these
+# tracings 80% of ends that do not reach a face stop within 20 µm of one (vs ~22% by chance).
+CROP_END_MARGIN_UM = 20.
 
 
 def minimum_loops(g):
@@ -317,6 +320,23 @@ def tissue_distance(mask, scale):
     return distribution(values), exact
 
 
+def face_distance_um(points, shape, scale):
+    """Distance in µm from each voxel centre to the nearest ROI face (faces lie half a voxel out)."""
+    points = np.asarray(points, dtype=float)
+    shape, scale = np.asarray(shape, dtype=float), np.asarray(scale, dtype=float)
+    return np.minimum((points + .5) * scale, (shape - .5 - points) * scale).min(axis=1)
+
+
+def reaches_face(points, radii, shape, scale):
+    """Centerline points whose vessel cross-section reaches an ROI face.
+
+    Thinning pulls skeleton ends back from a crop face by about the vessel radius, so a
+    vessel cut by the crop rarely has a centerline voxel on the face itself. A point counts
+    when its distance to the face is at most its EDT radius plus one (largest) voxel.
+    """
+    return face_distance_um(points, shape, scale) <= np.asarray(radii) + float(np.max(scale))
+
+
 def measure(mask, skeleton, raw_graph):
     scale = np.asarray(raw_graph['voxel_size_um'])
     contracted = contract_junctions(raw_graph)
@@ -332,6 +352,7 @@ def measure(mask, skeleton, raw_graph):
     rows = []
     shape = np.asarray(mask.shape)
     orientation = np.zeros((3, 3))
+    crop_ends = {}
     for e in branch_graph['edges']:
         points = np.asarray(e['points_zyx'], dtype=int)
         radii = distance[tuple(points.T)]
@@ -341,13 +362,17 @@ def measure(mask, skeleton, raw_graph):
         orientation += np.einsum('n,ni,nj->ij', steps, directions, directions)
         chord = float(np.linalg.norm((points[-1] - points[0]) * scale))
         loop = e['source'] == e['target']
+        at_face = reaches_face(points, radii, shape, scale)
+        end_gap = face_distance_um(points[[0, -1]], shape, scale) - radii[[0, -1]]
+        crop_ends.setdefault(e['source'], []).append(bool(end_gap[0] <= max(CROP_END_MARGIN_UM, scale.max())))
+        crop_ends.setdefault(e['target'], []).append(bool(end_gap[-1] <= max(CROP_END_MARGIN_UM, scale.max())))
         row = dict(branch_id=e['id'], raw_edge_id=e['raw_edge_id'], source=e['source'], target=e['target'],
                    component_id=membership[e['source']], length_um=length, chord_um=chord,
                    tortuosity=max(1., length / chord) if chord > 0 and not loop else None,
                    radius_mean_um=float(np.sum((radii[:-1] + radii[1:]) * .5 * steps) / length),
                    radius_min_um=float(radii.min()), radius_max_um=float(radii.max()),
                    radius_median_um=float(np.median(radii)),
-                   touches_boundary=bool(np.any((points == 0) | (points == shape - 1))),
+                   touches_boundary=bool(np.any(at_face)),
                    self_loop=loop, short_branch=bool(length < 3 * scale.min()),
                    bridge=frozenset((e['source'], e['target'])) in bridge_pairs)
         rows.append(row)
@@ -376,7 +401,7 @@ def measure(mask, skeleton, raw_graph):
     if any(r['touches_boundary'] for r in rows):
         warnings.append('Boundary-touching branches are crop-censored; radii near crop faces use padded background.')
     warnings.append('EDT radii estimate distance to background in the supplied mask, not lumen radius unless masks represent filled vessels.')
-    summary = dict(schema_version=2, voxel_size_um=scale.tolist(), roi_volume_um3=roi_volume,
+    summary = dict(schema_version=4, voxel_size_um=scale.tolist(), roi_volume_um3=roi_volume,
                    foreground_volume_um3=float(foreground * np.prod(scale)),
                    foreground_fraction=foreground / mask.size,
                    mask_components_26=int(count), largest_mask_component_fraction=float(sizes.max() / foreground) if foreground else None,
@@ -386,7 +411,11 @@ def measure(mask, skeleton, raw_graph):
                    raw_independent_cycles=raw.number_of_edges() - raw.number_of_nodes() + nx.number_connected_components(raw),
                    nodes=g.number_of_nodes(), branches=g.number_of_edges(), components=len(components),
                    independent_cycles=g.number_of_edges() - g.number_of_nodes() + len(components),
-                   endpoints=sum(d == 1 for d in degrees.values()), branch_nodes=sum(d >= 3 for d in degrees.values()),
+                   endpoints=sum(d == 1 for d in degrees.values()),
+                   crop_endpoints=sum(d == 1 and any(crop_ends.get(n, [])) for n, d in degrees.items()),
+                   interior_endpoints=sum(d == 1 and not any(crop_ends.get(n, [])) for n, d in degrees.items()),
+                   crop_end_margin_um=CROP_END_MARGIN_UM,
+                   branch_nodes=sum(d >= 3 for d in degrees.values()),
                    isolated_nodes=sum(d == 0 for d in degrees.values()), self_loops=nx.number_of_selfloops(g),
                    bridges=sum(r['bridge'] for r in rows),
                    total_branch_length_um=length, length_density_mm_per_mm3=length / roi_volume * 1e6,
