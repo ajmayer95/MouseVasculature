@@ -95,3 +95,17 @@ class SurfaceAndCacheTests(unittest.TestCase):
             self.assertFalse(is_current(folder, (1.8, 1.8, 1.8)))  # calibration changed
             (folder / 'statistics.json').write_text(json.dumps(dict(schema_version=2, analysis_variant='filled+closed')))
             self.assertFalse(is_current(folder))
+
+
+class StatsPanelTests(unittest.TestCase):
+    def test_metrics_skip_missing_values_and_weighted_median(self):
+        from mousevasculature.stats_panel import METRICS, rank_text, weighted_median
+        graph = square_with_tail()
+        graph['edges'][2]['statistics']['tortuosity'] = None  # e.g. a self-loop has no chord
+        values, weights = METRICS['vessel diameter (µm, length-weighted)'][0](graph)
+        np.testing.assert_allclose(values, 4.)
+        self.assertEqual(len(weights), 6)
+        self.assertEqual(len(METRICS['tortuosity (length / chord)'][0](graph)[0]), 5)
+        self.assertEqual(len(METRICS['loop perimeter (µm)'][0](graph)[0]), 2)
+        self.assertEqual(weighted_median(np.array([1., 2., 3.]), np.array([1., 1., 10.])), 3.)
+        self.assertEqual(rank_text(5, [1, 5, 9]), '2 of 3')

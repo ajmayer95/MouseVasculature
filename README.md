@@ -126,7 +126,10 @@ python -m mousevasculature --explore --sample LS027_ROI5 --variant original
 `--explore` reuses saved results in `results/` when they are complete and current, so
 a sample opens in a few seconds; otherwise it runs the analysis first. The **Data**
 panel switches sample and mask variant (`original`, `filled`, `filled+closed`) without
-restarting. The **explorer** panel offers:
+restarting. **Previous cube / Next cube** (keys `,` and `.`) step through all cubes in
+order, wrapping around; the mask variant, camera angle and zoom, surface colouring and
+slab settings carry over, so cubes can be compared from the same viewpoint. The
+**explorer** panel offers:
 
 - **Vessel surface.** A smoothed mesh of the analysed mask (Gaussian σ = 0.8 voxel,
   display only), coloured by the nearest branch's radius, length, tortuosity, smallest
@@ -139,15 +142,19 @@ restarting. The **explorer** panel offers:
   and **Path between selected** draw on top of the surface and zoom to the result.
 - **Slab.** Clip every layer to a thick slice along Z, Y, X or the current view
   direction; set its centre and thickness in µm. Clicks only select vessels inside it.
+  Jumping to a loop, path or branch moves the slab onto it and widens it if needed.
 - **Loops.** Filter (all, large, small, interior, crop-touching, annotated or not), step
   with **Previous/Next** (`n` / `Shift-N`) or **Go to loop**.
-- **Annotate loops** as real, artifact or unsure with the buttons or keys `1`/`2`/`3`.
+- **Annotate loops** as real, artifact or unsure with the buttons or keys `R` (real),
+  `J` (junk/artifact) and `U` (unsure).
   Labels are saved immediately to `results/<sample>_<variant>/loop_annotations.csv` with
   the loop's branch ids, perimeter and centroid. Saved labels are reloaded only while the
   loop still has the same branches; re-running the analysis can change loop ids.
 
-Hover does not show values (a napari 0.5.6 limitation in 3D); click instead. Number keys
-apply when the surface layer is selected; select it again if another layer captures them.
+Hover does not show values (a napari 0.5.6 limitation in 3D); click instead. The
+explorer's keys (`,` `.` `n` `Shift-N` `R` `J` `U`) are unused by napari's own layer
+shortcuts, so they work whichever layer is selected (number keys would not: napari uses
+them to switch layer modes).
 
 ### Highlight features in napari
 

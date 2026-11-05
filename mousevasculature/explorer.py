@@ -240,7 +240,7 @@ def branch_colours(net, choice):
                               (f'; grey = {missing}' if missing else ''))
 
 
-def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
+def add_explorer(viewer, mask, branch_graph, scale, name, folder=None, on_select=None):
     """Add the vessel surface, click selection, highlight overlays, slab clipping and loop annotation.
 
     Returns a dict of actions (for scripting and tests) including `cleanup`, which removes
@@ -289,6 +289,14 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
         viewer.dims.point = tuple(centre)
         canvas = min(getattr(viewer, '_canvas_size', (600, 600)))
         viewer.camera.zoom = canvas / max(1.6 * extent, 80)
+        if slab['normal'] is not None:  # move (and if needed widen) an active slab to contain the target
+            n = slab['normal']
+            along = (points / scale - slab_centre) @ n * np.linalg.norm(n * scale)
+            needed = float(along.max() - along.min()) + 20.
+            if needed > slab_thickness.value:
+                slab_thickness.value = float(min(needed, slab_thickness.max))
+            middle = float(along.max() + along.min()) / 2
+            slab_position.value = float(np.clip(middle, slab_position.min, slab_position.max))
 
     # ---- panel text ------------------------------------------------------------------
     state = dict(selected=[], loop_index=-1, loop=None)
@@ -305,6 +313,7 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
     colour_by = ComboBox(choices=list(SURFACE_COLOURS), value='radius (µm)', label='colour by')
     bar = Label(value='')
     bar.native.setFixedHeight(12)
+    bar.native.setMinimumWidth(320)
     bar_text = Label(value='')
     bar_text.native.setWordWrap(True)
 
@@ -324,7 +333,7 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
     colour_by.changed.connect(recolour)
 
     # ---- slab clipping ---------------------------------------------------------------
-    centre = (np.asarray(mask.shape) - 1) / 2
+    slab_centre = (np.asarray(mask.shape) - 1) / 2
     half_diagonal = float(np.linalg.norm(np.asarray(mask.shape) * scale) / 2)
     slab_axis = ComboBox(choices=['off', 'Z', 'Y', 'X', 'view direction'], value='off', label='slab')
     slab_position = FloatSlider(min=-half_diagonal, max=half_diagonal, value=0., label='centre (µm)')
@@ -347,7 +356,7 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
             return np.ones(len(points), dtype=bool)
         n = slab['normal']
         um_per_unit = np.linalg.norm(n * scale)
-        offset = (points - centre) @ n * um_per_unit
+        offset = (points - slab_centre) @ n * um_per_unit
         return np.abs(offset - slab_position.value) <= slab_thickness.value / 2
 
     def apply_slab(_=None):
@@ -355,8 +364,8 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
         planes = []
         if n is not None:
             um_per_unit = np.linalg.norm(n * scale)
-            low = centre + n * (slab_position.value - slab_thickness.value / 2) / um_per_unit
-            high = centre + n * (slab_position.value + slab_thickness.value / 2) / um_per_unit
+            low = slab_centre + n * (slab_position.value - slab_thickness.value / 2) / um_per_unit
+            high = slab_centre + n * (slab_position.value + slab_thickness.value / 2) / um_per_unit
             planes = [dict(position=tuple(low), normal=tuple(n), enabled=True),
                       dict(position=tuple(high), normal=tuple(-n), enabled=True)]
         for layer in list(viewer.layers):
@@ -393,6 +402,8 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
             state['selected'] = [branch]
         show('selection', state['selected'], 'yellow', 2)
         report(net.describe_selection(state['selected']) if state['selected'] else 'Selection cleared.')
+        if on_select:
+            on_select(list(state['selected']))
 
     def require_selection():
         if not state['selected']:
@@ -469,6 +480,8 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
             if layer in viewer.layers:
                 layer.visible = False
         report('Highlights cleared. Click a vessel to select it.')
+        if on_select:
+            on_select([])
 
     # ---- loop annotation -------------------------------------------------------------
     annotation_file = Path(folder) / 'loop_annotations.csv' if folder else None
@@ -487,7 +500,7 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
     def describe_loop(loop):
         text = net.describe_loop(loop)
         label = annotations.get(loop['loop_id'], {}).get('label')
-        return text + (f'\nannotation: {label}' if label else '\nannotation: none (press 1 real, 2 artifact, 3 unsure)')
+        return text + (f'\nannotation: {label}' if label else '\nannotation: none (press R real, J junk/artifact, U unsure)')
 
     def annotation_summary():
         counts = {k: sum(r['label'] == k for r in annotations.values()) for k in ANNOTATION_LABELS}
@@ -591,8 +604,8 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
         heading('Loops'), loop_filter,
         row(button('Previous', lambda: step(-1)), button('Next', lambda: step(1))),
         row(loop_id, button('Go to loop', go_to_loop)),
-        row(button('1 Real', lambda: annotate('real')), button('2 Artifact', lambda: annotate('artifact')),
-            button('3 Unsure', lambda: annotate('unsure')), button('Clear', lambda: annotate(None))),
+        row(button('Real (R)', lambda: annotate('real')), button('Artifact (J)', lambda: annotate('artifact')),
+            button('Unsure (U)', lambda: annotate('unsure')), button('Clear', lambda: annotate(None))),
         annotation_status,
     ])
     panel.native.setMinimumWidth(400)
@@ -604,11 +617,12 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None):
     dock = viewer.window.add_dock_widget(scroll, name=f'{name} explorer', area='right')
 
     keys = {'n': lambda v: step(1), 'Shift-N': lambda v: step(-1),
-            '1': lambda v: annotate('real'), '2': lambda v: annotate('artifact'), '3': lambda v: annotate('unsure')}
+            # Letters unused by napari 0.5.6 layer keymaps (surface/vectors use 1 and 2, labels 1-7).
+            'r': lambda v: annotate('real'), 'j': lambda v: annotate('artifact'), 'u': lambda v: annotate('unsure')}
     for key, action in keys.items():
         viewer.bind_key(key, action, overwrite=True)
     recolour()
-    viewer.layers.selection.active = surface  # keeps number keys away from the labels layer's own shortcuts
+    viewer.layers.selection.active = surface
 
     def cleanup():
         if on_click in viewer.mouse_drag_callbacks:
