@@ -80,10 +80,11 @@ def rank_text(value, others):
     return f'{rank} of {len(others)}'
 
 
-def add_stats_panel(viewer, name, graph, summary, cohort=None, values=None):
+def add_stats_panel(viewer, name, graph, summary, cohort=None, values=None, host=None):
     """Add the statistics dock. `cohort` maps cube name -> (graph, summary), including this cube.
 
     Returns dict(metric, redraw, mark, cleanup); `mark(branch_ids)` draws the clicked vessels.
+    With `host`, a callable host(widget, title) -> remove(), the panel goes there instead of a dock.
     """
     from magicgui.widgets import ComboBox, Container, Label
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -180,10 +181,18 @@ def add_stats_panel(viewer, name, graph, summary, cohort=None, values=None):
     panel.native.setMinimumWidth(400)
     headline_table()
     redraw()
-    dock = viewer.window.add_dock_widget(panel, name=f'{name} statistics', area='right', tabify=False)
+    if host is None:
+        dock = viewer.window.add_dock_widget(panel, name=f'{name} statistics', area='right')
+        remove_panel = lambda: viewer.window.remove_dock_widget(dock)
+    else:
+        from qtpy.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel.native)
+        remove_panel = host(scroll, 'Statistics')
 
     def cleanup():
-        viewer.window.remove_dock_widget(dock)
+        remove_panel()
         figure.clear()
 
     return dict(metric=metric, redraw=redraw, mark=mark, cleanup=cleanup, axes=axes, values=values)

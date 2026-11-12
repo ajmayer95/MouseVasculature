@@ -128,8 +128,14 @@ a sample opens in a few seconds; otherwise it runs the analysis first. The **Dat
 panel switches sample and mask variant (`original`, `filled`, `filled+closed`) without
 restarting. **Previous cube / Next cube** (keys `,` and `.`) step through all cubes in
 order, wrapping around; the mask variant, camera angle and zoom, surface colouring and
-slab settings carry over, so cubes can be compared from the same viewpoint. The
-**explorer** panel offers:
+slab settings carry over, so cubes can be compared from the same viewpoint. Below the
+data controls, two tabs share the right-hand column: **Explore** and **Statistics**
+(click a tab or press `t`; the open tab is kept when switching cubes). The
+**Statistics** tab shows histograms of the current cube (filled bars) against all
+cubes with saved results (grey outline): vessel diameter, branch length, tortuosity,
+loop perimeter, Murray ratio and branching angle. The clicked vessel is marked in
+yellow, and a table ranks the cube's headline numbers among all cubes. The
+**Explore** tab offers:
 
 - **Vessel surface.** A smoothed mesh of the analysed mask (Gaussian σ = 0.8 voxel,
   display only), coloured by the nearest branch's radius, length, tortuosity, smallest

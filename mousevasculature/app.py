@@ -51,8 +51,29 @@ def explore(data_path, output, sample=None, variant='filled+closed', scale=None,
         return dict(camera=dict(center=viewer.camera.center, zoom=viewer.camera.zoom, angles=viewer.camera.angles),
                     widgets={k: ui[k].value for k in ('colour_by', 'slab_axis', 'slab_position', 'slab_thickness')})
 
+    from qtpy.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+    tabs = QTabWidget()
+    tab_order = ['Explore', 'Statistics']
+
+    def host(widget, title):
+        """Put a cube's panel into its tab (fixed order); returns a function that removes it."""
+        index = sum(tabs.tabText(i) in tab_order[:tab_order.index(title)] for i in range(tabs.count()))
+        tabs.insertTab(index, widget, title)
+
+        def remove():
+            i = tabs.indexOf(widget)
+            if i >= 0:
+                tabs.removeTab(i)
+            widget.deleteLater()
+        return remove
+
+    def toggle_tab(_=None):
+        if tabs.count():
+            tabs.setCurrentIndex((tabs.currentIndex() + 1) % tabs.count())
+
     def load(keep_view=False):
         settings = carried_settings() if keep_view else None
+        current_tab = tabs.tabText(tabs.currentIndex()) if tabs.count() else 'Explore'
         if state['explorer']:
             state['explorer']['cleanup']()
             state['explorer'] = None
@@ -72,9 +93,11 @@ def explore(data_path, output, sample=None, variant='filled+closed', scale=None,
         summary = data['summary'] or {}
         cohort, values = cohort_for(chosen)
         state['stats'] = stats = add_stats_panel(viewer, name, data['graph'], summary,
-                                                 {n: c for n, c in cohort.items() if n != name}, values)
+                                                 {n: c for n, c in cohort.items() if n != name}, values, host=host)
         state['explorer'] = ui = add_explorer(viewer, data['mask'], data['graph'], data['scale'], name,
-                                              folder=data['folder'], on_select=stats['mark'])
+                                              folder=data['folder'], on_select=stats['mark'], host=host)
+        titles = [tabs.tabText(i) for i in range(tabs.count())]
+        tabs.setCurrentIndex(titles.index(current_tab) if current_tab in titles else 0)
         status.value = (f"{names.index(name) + 1}/{len(names)}  {name} · {chosen} · "
                         f"{'computed now' if data['computed'] else 'loaded from saved results'}\n"
                         f"{summary.get('branches', '?')} branches, {summary.get('independent_cycles', '?')} loops, "
@@ -110,12 +133,20 @@ def explore(data_path, output, sample=None, variant='filled+closed', scale=None,
     data_panel = Container(widgets=[sample_box, variant_box, load_button,
                                     Container(layout='horizontal', widgets=[previous_button, next_button], labels=False),
                                     status])
-    data_panel.native.setMaximumHeight(280)  # leave the right column to the explorer panel
-    viewer.window.add_dock_widget(data_panel, name='Data', area='right')
-    # ',' and '.' are unused by napari 0.5.6 viewer and layer keymaps.
+    data_panel.native.setMaximumHeight(240)  # leave the column to the Explore / Statistics tabs
+    column = QWidget()
+    layout = QVBoxLayout(column)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(data_panel.native)
+    layout.addWidget(tabs, stretch=1)
+    column.setMinimumWidth(440)
+    viewer.window.add_dock_widget(column, name='Explorer', area='right')
+    # ',', '.' and 't' are unused by napari 0.5.6 viewer and layer keymaps.
     viewer.bind_key(',', lambda v: cycle(-1), overwrite=True)
     viewer.bind_key('.', lambda v: cycle(1), overwrite=True)
-    state['controls'] = dict(sample=sample_box, variant=variant_box, load=load, cycle=cycle, status=status)
+    viewer.bind_key('t', toggle_tab, overwrite=True)
+    state['controls'] = dict(sample=sample_box, variant=variant_box, load=load, cycle=cycle, status=status,
+                             tabs=tabs, toggle_tab=toggle_tab)
     load()
     if run:
         napari.run()

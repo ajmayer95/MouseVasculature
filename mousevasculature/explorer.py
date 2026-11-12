@@ -240,11 +240,12 @@ def branch_colours(net, choice):
                               (f'; grey = {missing}' if missing else ''))
 
 
-def add_explorer(viewer, mask, branch_graph, scale, name, folder=None, on_select=None):
+def add_explorer(viewer, mask, branch_graph, scale, name, folder=None, on_select=None, host=None):
     """Add the vessel surface, click selection, highlight overlays, slab clipping and loop annotation.
 
     Returns a dict of actions (for scripting and tests) including `cleanup`, which removes
-    the panel, mouse callback and key bindings; the caller removes layers.
+    the panel, mouse callback and key bindings; the caller removes layers. With `host`, a
+    callable host(widget, title) -> remove(), the panel goes there instead of its own dock.
     """
     import csv
     import datetime
@@ -614,7 +615,11 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None, on_select
     scroll.setWidget(panel.native)
     scroll.setMinimumWidth(430)
     scroll.setMaximumWidth(500)
-    dock = viewer.window.add_dock_widget(scroll, name=f'{name} explorer', area='right')
+    if host is None:
+        dock = viewer.window.add_dock_widget(scroll, name=f'{name} explorer', area='right')
+        remove_panel = lambda: viewer.window.remove_dock_widget(dock)
+    else:
+        remove_panel = host(scroll, 'Explore')
 
     keys = {'n': lambda v: step(1), 'Shift-N': lambda v: step(-1),
             # Letters unused by napari 0.5.6 layer keymaps (surface/vectors use 1 and 2, labels 1-7).
@@ -629,7 +634,7 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None, on_select
             viewer.mouse_drag_callbacks.remove(on_click)
         for key in keys:
             viewer.bind_key(key, None, overwrite=True)
-        viewer.window.remove_dock_widget(dock)
+        remove_panel()
 
     return dict(select=select, step=step, loops_through=loops_through, shortest_loop=shortest_loop,
                 component=component, path=path, clear=clear, filter=loop_filter, info=info,
