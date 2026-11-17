@@ -1,15 +1,28 @@
 """Shortest loop through every vessel, in the style of Ji et al. (2021), Neuron, Fig. 3e.
 
-For each branch e = (u, v) of the vessel graph (junction-to-junction or junction-to-tip
-segments; degree-2 points are already merged by the pipeline): remove e, find the shortest
-u -> v path weighted by centerline length, and report the loop it closes with e, as a
-number of branches and as a perimeter in µm. A branch with no alternative path is a bridge
-and gets no loop size. As a sensitivity check the same is done with unweighted paths
-(fewest branches). Parallel branches and self-loops keep their own ids (loop sizes 2 and 1).
+Reference: Ji X, Ferreira T, Friedman B, Liu R, Liechty H, Bas E, Chandrashekar J,
+Kleinfeld D (2021). Brain microvasculature has a common topology with local differences in
+geometry that match metabolic load. Neuron 109(7):1168-1187.e13.
+https://doi.org/10.1016/j.neuron.2021.02.006
 
-Loops are always computed on a whole cube's network; results are then assigned to 250 µm
-subregions (8 per 500 µm cube) for the per-region distributions, so the subdivision never
-creates artificial bridges. Only existing results are read; nothing is overwritten.
+Definitions follow the paper's STAR Methods:
+- Loop size (Fig. 3E, p. e9): "number of vessel segments in the shortest loop measured by
+  segment length", per branch. For each branch e = (u, v) (degree-2 points are already
+  merged by the pipeline): remove e, find the shortest u -> v path weighted by centerline
+  length, and report the loop it closes with e, in branches and µm. A branch with no
+  alternative path is a bridge. Fewest-branch loops are a sensitivity check.
+- Box-plot unit (Fig. 3E): per-240-µm-cube distributions. Loops are computed on the whole
+  graph (whole brain in the paper; whole 500 µm cube here) and then assigned to 240 µm
+  regions, so the subdivision never creates artificial bridges.
+- Graph refinement (Algorithm 1, p. e5): iteratively delete free-ended branches <= 2 µm,
+  self-loops <= 30 µm, and one branch of every two-branch loop with a branch <= 15 µm. The
+  paper deletes the dimmer branch; binary masks carry no intensity, so the shorter one goes.
+  Applied here as a sensitivity variant (`ji_refine`); the paper's classifier steps are not.
+- Fig. 3H (p. e10): remove a fraction p of branches at random, record the fraction of nodes
+  in the largest connected component s(p), 500 repeats; the threshold is the p maximising
+  |ds/dp|. Brain: networks fall apart after 0.433-0.447 of branches are removed.
+
+Only existing results are read; nothing is overwritten.
 
 Run:  python -m mousevasculature.loop_topology [--results results] [--variant filled+closed]
 """
@@ -21,11 +34,19 @@ from pathlib import Path
 import networkx as nx
 import numpy as np
 
-# Brain reference reported by Ji et al. (2021); value confirmed by the user, no brain data here.
-BRAIN_MEAN_LOOP_BRANCHES = 8.97
-BRAIN_REFERENCE_LABEL = 'brain, Ji et al. 2021 (reported mean 8.97 ± 0.53)'
-REGION_UM = 250.
+# Brain reference values from Ji et al. (2021); no brain data are included here.
+BRAIN_MEAN_LOOP_BRANCHES = 8.97   # p. 1175: 8.97 ± 0.53 (mean ± SE) branches in the shortest loop
+BRAIN_LOOP_SE = 0.53
+BRAIN_REFERENCE_LABEL = 'brain, Ji et al. 2021 (mean 8.97 ± 0.53 SE)'
+BRAIN_PERCOLATION_REMOVED = (0.433, 0.447)  # p. 1176, Fig. 3H: fraction of branches removed at breakdown
+CITATION = ('Ji et al. (2021) Neuron 109:1168-1187. Brain microvasculature has a common topology with local '
+            'differences in geometry that match metabolic load. doi:10.1016/j.neuron.2021.02.006')
+REGION_UM = 240.   # Ji et al. analyse 240-µm cubes
+CUBE_UM = 500.     # prostate ROI edge (calibration.json)
 ARTIFACT_LOOP_UM = 50.  # matches statistics.SMALL_LOOP_UM
+# Ji et al. Algorithm 1 thresholds (µm)
+JI_STUB_UM, JI_SELF_LOOP_UM, JI_PARALLEL_UM = 2., 30., 15.
+PERCOLATION_REPEATS = 500
 MAX_BIN = 16            # loop sizes above this go into one '>16' bin
 MIN_REGION_EDGES = 15   # regions with fewer looped branches are left out of the box plots
 
@@ -82,6 +103,18 @@ def midpoint(points_um):
     return points_um[i]
 
 
+def region_index(mid_um, region_um=REGION_UM, cube_um=CUBE_UM):
+    """Index (z, y, x) of the centred region grid cell holding a point, or None in the margin.
+
+    A 500 µm cube holds 2 x 2 x 2 regions of 240 µm; the grid is centred, leaving a 10 µm
+    margin on every face whose branches count in pooled statistics but in no region.
+    """
+    n = int(cube_um // region_um)
+    offset = (cube_um - n * region_um) / 2
+    idx = np.floor((np.asarray(mid_um, float) - offset) / region_um).astype(int)
+    return tuple(int(i) for i in idx) if np.all((idx >= 0) & (idx < n)) else None
+
+
 def cube_edges(name, graph, summary, region_um=REGION_UM):
     """Per-branch records for one cube (loops computed on the whole cube)."""
     scale = np.asarray(graph['voxel_size_um'], float)
@@ -92,7 +125,7 @@ def cube_edges(name, graph, summary, region_um=REGION_UM):
         s = e['statistics']
         cycle = shortest_cycle(g, e['source'], e['target'], e['id'])
         mid = midpoint(np.asarray(e['points_zyx'], float) * scale)
-        region = np.clip((mid // region_um).astype(int), 0, 1)
+        region = region_index(mid, region_um)
         rows.append(dict(
             cube=name, branch_id=e['id'], source=e['source'], target=e['target'],
             degree_source=degree[e['source']], degree_target=degree[e['target']],
@@ -104,11 +137,75 @@ def cube_edges(name, graph, summary, region_um=REGION_UM):
             loop_kind=None if cycle is None else {1: 'self_loop', 2: 'parallel'}.get(cycle['branches'], 'cycle'),
             likely_artifact=bool(cycle and cycle['length_um'] < ARTIFACT_LOOP_UM),
             mid_z_um=mid[0], mid_y_um=mid[1], mid_x_um=mid[2],
-            region=f'{name}:z{region[0]}y{region[1]}x{region[2]}'))
+            region=None if region is None else f'{name}:z{region[0]}y{region[1]}x{region[2]}'))
     return rows, g
 
 
-def cube_descriptors(name, g, rows, summary, deletion_fractions, repeats=30, seed=0):
+def ji_refine(g):
+    """Ji et al. (2021) Algorithm 1 on a branch graph; returns (refined copy, deletion counts).
+
+    Repeats until nothing changes: delete free-ended branches <= 2 µm; delete self-loops
+    <= 30 µm; for each pair of nodes joined by two or more branches where one is <= 15 µm,
+    delete one (the shorter: the paper drops the dimmer one, and binary masks carry no
+    intensity); then merge degree-2 nodes, as the paper's graph update does.
+    """
+    g = g.copy()
+    counts = dict(stubs=0, self_loops=0, parallel=0)
+    while True:
+        changed = 0
+        for u, v, k, d in list(g.edges(keys=True, data=True)):
+            if u != v and min(g.degree(u), g.degree(v)) == 1 and d['length_um'] <= JI_STUB_UM:
+                g.remove_edge(u, v, k)
+                counts['stubs'] += 1
+                changed += 1
+        for u, v, k, d in list(g.edges(keys=True, data=True)):
+            if u == v and d['length_um'] <= JI_SELF_LOOP_UM:
+                g.remove_edge(u, v, k)
+                counts['self_loops'] += 1
+                changed += 1
+        for u, v in {tuple(sorted((a, b), key=str)) for a, b in g.edges() if a != b}:
+            parallel = sorted(g[u][v].items(), key=lambda kv: kv[1]['length_um'])
+            if len(parallel) >= 2 and parallel[0][1]['length_um'] <= JI_PARALLEL_UM:
+                g.remove_edge(u, v, parallel[0][0])
+                counts['parallel'] += 1
+                changed += 1
+        g.remove_nodes_from([n for n in list(g.nodes) if g.degree(n) == 0])
+        g = contract_degree_two(g)
+        if not changed:
+            return g, counts
+
+
+def percolation_curve(g, fractions, repeats=PERCOLATION_REPEATS, seed=0):
+    """Ji et al. Fig. 3H: mean fraction of all nodes in the largest component after removing
+    a fraction of branches at random."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    index = {n: i for i, n in enumerate(g.nodes)}
+    pairs = np.array([(index[u], index[v]) for u, v in g.edges()], int).reshape(-1, 2)
+    n_nodes, n_edges = len(index), len(pairs)
+    rng = np.random.default_rng(seed)
+    curve = []
+    for f in fractions:
+        keep_n = n_edges - int(round(f * n_edges))
+        values = np.empty(repeats)
+        for r in range(repeats):
+            kept = pairs[rng.permutation(n_edges)[:keep_n]]
+            adjacency = coo_matrix((np.ones(len(kept)), (kept[:, 0], kept[:, 1])), shape=(n_nodes, n_nodes))
+            _, labels = connected_components(adjacency, directed=False)
+            values[r] = np.bincount(labels).max() / n_nodes
+        curve.append(float(values.mean()))
+    return curve
+
+
+def percolation_threshold(fractions, curve):
+    """Removed fraction where the mean curve falls fastest (max |ds/dp|), as in Ji et al."""
+    fractions, curve = np.asarray(fractions, float), np.asarray(curve, float)
+    slopes = np.abs(np.diff(curve) / np.diff(fractions))
+    i = int(np.argmax(slopes))
+    return float((fractions[i] + fractions[i + 1]) / 2)
+
+
+def cube_descriptors(name, g, rows, summary, deletion_fractions, repeats=PERCOLATION_REPEATS, seed=0):
     """Size-normalised network descriptors and a random branch-deletion curve for one cube."""
     volume_mm3 = summary['roi_volume_um3'] / 1e9
     nodes, edges, comps = g.number_of_nodes(), g.number_of_edges(), nx.number_connected_components(g)
@@ -129,19 +226,9 @@ def cube_descriptors(name, g, rows, summary, deletion_fractions, repeats=30, see
         boundary_branch_fraction=np.mean([r['touches_boundary'] for r in rows]),
         mean_loop_branches=np.mean([r['loop_branches'] for r in rows if not r['bridge']]),
         median_loop_length_um=np.median([r['loop_length_um'] for r in rows if not r['bridge']]))
-    # Random deletion: fraction of nodes left in the largest connected piece.
-    rng = np.random.default_rng(seed)
-    keys = list(g.edges(keys=True))
-    start = max(len(c) for c in nx.connected_components(g))
-    curve = []
-    for f in deletion_fractions:
-        values = []
-        for _ in range(repeats):
-            h = g.copy()
-            drop = rng.choice(len(keys), int(round(f * len(keys))), replace=False)
-            h.remove_edges_from([keys[i] for i in drop])
-            values.append(max(len(c) for c in nx.connected_components(h)) / start)
-        curve.append(float(np.mean(values)))
+    # Ji et al. Fig. 3H: fraction of all nodes in the largest component after random removal.
+    curve = percolation_curve(g, deletion_fractions, repeats, seed)
+    out['percolation_threshold_removed'] = percolation_threshold(deletion_fractions, curve)
     return out, curve
 
 
@@ -165,7 +252,7 @@ def region_distributions(rows, field='loop_branches'):
     """region -> probability per loop-size bin (1..MAX_BIN, >MAX_BIN), for regions with enough branches."""
     by_region = {}
     for r in rows:
-        if not r['bridge']:
+        if not r['bridge'] and r['region'] is not None:
             by_region.setdefault(r['region'], []).append(min(r[field], MAX_BIN + 1))
     out = {}
     for region, sizes in by_region.items():
@@ -204,7 +291,7 @@ def contract_degree_two(g):
     return g
 
 
-def window_bias(cubes, sizes=(200, 250, 300, 375, 450, 500), cube_um=500.):
+def window_bias(cubes, sizes=(200, 240, 300, 375, 450, 500), cube_um=CUBE_UM):
     """Loop statistics recomputed inside smaller windows of each cube.
 
     Branches are kept when their midpoint lies in the window; junctions left with two
@@ -243,7 +330,8 @@ def figure_d(bias, out):
     m = np.array([b['mean_loop_branches'] for b in bias])
     sd = np.array([b['sd_loop_branches'] for b in bias])
     ax.errorbar(w, m, yerr=sd, marker='o', color='#08519c', capsize=3, label='prostate: mean ± SD over windows')
-    ax.axhline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', label='brain, Ji et al. 2021 (reported mean;\nwhole network, not windowed)')
+    ax.axhspan(BRAIN_MEAN_LOOP_BRANCHES - BRAIN_LOOP_SE, BRAIN_MEAN_LOOP_BRANCHES + BRAIN_LOOP_SE, color='#d95f02', alpha=.12, lw=0)
+    ax.axhline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', label='brain, Ji et al. 2021 (mean ± SE;\nwhole-brain graph, not windowed)')
     twin = ax.twinx()
     twin.plot(w, [b['looped_fraction'] for b in bias], marker='s', color='#31a354', linestyle='--', label='fraction of branches on a loop')
     twin.set_ylim(0, 1), twin.set_ylabel('fraction on a loop', color='#31a354', fontsize=9)
@@ -263,7 +351,7 @@ def style(ax):
     ax.tick_params(labelsize=8)
 
 
-def figure_a(rows, out):
+def figure_a(rows, out, refined_sizes=None):
     import matplotlib.pyplot as plt
     looped = [r for r in rows if not r['bridge']]
     regions = region_distributions(rows)
@@ -275,6 +363,7 @@ def figure_a(rows, out):
                medianprops=dict(color='#08519c'), whiskerprops=dict(color='#3182bd'), capprops=dict(color='#3182bd'))
     mean = np.mean([r['loop_branches'] for r in looped])
     ax.axvline(mean, color='#08519c', linestyle='--', linewidth=1.2, label=f'prostate mean {mean:.2f} (computed)')
+    ax.axvspan(BRAIN_MEAN_LOOP_BRANCHES - BRAIN_LOOP_SE, BRAIN_MEAN_LOOP_BRANCHES + BRAIN_LOOP_SE, color='#d95f02', alpha=.12, lw=0)
     ax.axvline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', linewidth=1.5, label=BRAIN_REFERENCE_LABEL)
     ax.set_xticks(bins, [bin_label(b) for b in bins])
     ax.set_xlabel('branches in shortest loop through a branch (length-weighted)')
@@ -291,7 +380,12 @@ def figure_a(rows, out):
         sizes = np.minimum([r[field] for r in rows_], MAX_BIN + 1)
         p = np.bincount(sizes, minlength=MAX_BIN + 2)[1:] / len(sizes)
         bx.step(bins, p, where='mid', color=colour, label=f'{label}: mean {np.mean([r[field] for r in rows_]):.2f}, n={len(sizes)}')
-    bx.axvline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', linewidth=1.5, label='brain, Ji et al. 2021 (reported mean)')
+    if refined_sizes is not None and len(refined_sizes):
+        sizes = np.minimum(refined_sizes, MAX_BIN + 1)
+        p = np.bincount(sizes, minlength=MAX_BIN + 2)[1:] / len(sizes)
+        bx.step(bins, p, where='mid', color='#e7298a', linestyle='--',
+                label=f'graph refined as Ji et al. Alg. 1: mean {np.mean(refined_sizes):.2f}, n={len(sizes)}')
+    bx.axvline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', linewidth=1.5, label='brain, Ji et al. 2021 (mean)')
     bx.set_xticks(bins, [bin_label(b) for b in bins])
     bx.set_xlabel('branches in shortest loop')
     bx.set_ylabel('probability (pooled)')
@@ -332,13 +426,13 @@ def figure_b(cubes, rows, out):
         ax.set_xlim(0, 500), ax.set_ylim(500, 0), ax.set_aspect('equal')
         ax.set_xticks([]), ax.set_yticks([])
         ax.set_title(name, fontsize=8)
-        for edge in (250,):
+        for edge in (10, 250, 490):
             ax.axvline(edge, color='#eeeeee', linewidth=.5, zorder=0), ax.axhline(edge, color='#eeeeee', linewidth=.5, zorder=0)
     for ax in axes.flat[len(names):]:
         ax.axis('off')
     bar = fig.colorbar(lines, ax=axes, shrink=.6, ticks=range(2, MAX_BIN + 1))
     bar.set_label(f'branches in shortest loop ({MAX_BIN} = {MAX_BIN} or more); grey = bridge')
-    fig.suptitle('Shortest-loop size per branch, top view (X–Y projection of 3D 500 µm cubes; faint lines = 250 µm regions)',
+    fig.suptitle('Shortest-loop size per branch, top view (X–Y projection of 3D 500 µm cubes; faint lines = 240 µm regions)',
                  fontsize=10)
     save(fig, out, 'figB_spatial_loop_size')
 
@@ -395,10 +489,14 @@ def figure_c(rows, descriptors, curves, fractions, out):
 
     ax = axes[1, 0]  # random deletion
     curves = np.array(curves)
+    thresholds = [d['percolation_threshold_removed'] for d in descriptors]
     ax.fill_between(fractions, curves.min(0), curves.max(0), color='#9ecae1', alpha=.6, label='range over cubes')
-    ax.plot(fractions, curves.mean(0), color='#08519c', label='mean of 15 cubes')
-    ax.set_xlabel('fraction of branches removed at random'), ax.set_ylabel('largest piece / largest piece before removal\n(nodes)', fontsize=8)
-    ax.set_title('Random branch deletion (analogous to Ji et al. Fig. 3h;\nmeasure not verified against the paper)', fontsize=9)
+    ax.plot(fractions, curves.mean(0), color='#08519c', label=f'mean of {len(curves)} cubes')
+    ax.axvspan(*BRAIN_PERCOLATION_REMOVED, color='#d95f02', alpha=.3, lw=0, label='brain breakdown, Ji et al. (0.433–0.447)')
+    ax.axvline(np.median(thresholds), color='#08519c', linestyle='--', linewidth=1,
+               label=f'prostate breakdown, median {np.median(thresholds):.2f} (range {min(thresholds):.2f}–{max(thresholds):.2f})')
+    ax.set_xlabel('fraction of branches removed at random'), ax.set_ylabel('fraction of all nodes in largest component', fontsize=8)
+    ax.set_title(f'Random branch removal as in Ji et al. Fig. 3H\n({PERCOLATION_REPEATS} repeats; breakdown = steepest drop)', fontsize=9)
     ax.legend(fontsize=7, frameon=False)
     style(ax)
 
@@ -425,7 +523,8 @@ def figure_c(rows, descriptors, curves, fractions, out):
     ax = axes[1, 2]  # region loop size vs local length density
     by_region = {}
     for r in rows:
-        by_region.setdefault(r['region'], []).append(r)
+        if r['region'] is not None:
+            by_region.setdefault(r['region'], []).append(r)
     xs, ys = [], []
     region_mm3 = (REGION_UM / 1000) ** 3
     for region_rows in by_region.values():
@@ -435,7 +534,7 @@ def figure_c(rows, descriptors, curves, fractions, out):
             ys.append(np.mean(loops_))
     rho = spearmanr(xs, ys)
     ax.scatter(xs, ys, s=12, color='#3182bd')
-    ax.axhline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', label='brain, Ji et al. 2021 (reported mean)')
+    ax.axhline(BRAIN_MEAN_LOOP_BRANCHES, color='#d95f02', linestyle=':', label='brain, Ji et al. 2021 (mean)')
     ax.set_xlabel('local length density (mm/mm³)')
     ax.set_ylabel('mean branches in shortest loop')
     ax.set_title(f'{len(xs)} regions of {REGION_UM:.0f} µm: Spearman ρ = {rho[0]:.2f} (p = {rho[1]:.2g})', fontsize=9)
@@ -470,19 +569,31 @@ def run(results='results', variant_suffix='_filled_closed', out=None):
     cubes = load_cubes(results, variant_suffix)
     if not cubes:
         raise SystemExit(f'No saved results matching *_Filaments{variant_suffix} in {results}')
-    fractions = np.round(np.arange(0, .95, .05), 2)
+    fractions = np.round(np.arange(0, .95, .02), 2)
     rows, descriptors, curves = [], [], []
+    refined_sizes, refined_branches, refined_bridges = [], 0, 0
+    refine_counts = dict(stubs=0, self_loops=0, parallel=0)
     for name, (graph, summary) in cubes.items():
         cube_rows, g = cube_edges(name, graph, summary)
         d, curve = cube_descriptors(name, g, cube_rows, summary, fractions)
         rows += cube_rows
         descriptors.append(d)
         curves.append(curve)
+        refined, counts = ji_refine(g)
+        for k in refine_counts:
+            refine_counts[k] += counts[k]
+        for u, v, k in list(refined.edges(keys=True)):
+            refined_branches += 1
+            cycle = shortest_cycle(refined, u, v, k)
+            if cycle is None:
+                refined_bridges += 1
+            else:
+                refined_sizes.append(cycle['branches'])
     looped = [r for r in rows if not r['bridge']]
     regions = region_distributions(rows)
     region_means = [np.mean([r['loop_branches'] for r in rows if r['region'] == k and not r['bridge']]) for k in regions]
     mean_ci = cube_bootstrap(rows, lambda rs: np.mean([r['loop_branches'] for r in rs if not r['bridge']]))
-    figure_a(rows, out)
+    figure_a(rows, out, refined_sizes)
     figure_b(cubes, rows, out)
     extra = figure_c(rows, descriptors, curves, fractions, out)
     bias = window_bias(cubes)
@@ -512,8 +623,17 @@ def run(results='results', variant_suffix='_filled_closed', out=None):
         looped_fraction_interior=float(np.mean([not r['bridge'] for r in rows if not r['touches_boundary']])),
         boundary_branch_fraction=float(np.mean([r['touches_boundary'] for r in rows])),
         degree2_nodes=int(sum(d['degree2_nodes'] for d in descriptors)),
-        brain_reference=dict(mean_loop_branches=BRAIN_MEAN_LOOP_BRANCHES, source=BRAIN_REFERENCE_LABEL,
-                             note='published value, confirmed by the user; not recomputed (no brain data)'),
+        ji_refined=dict(mean_loop_branches=float(np.mean(refined_sizes)), median_loop_branches=float(np.median(refined_sizes)),
+                        branches=refined_branches, looped_branches=len(refined_sizes), bridges=refined_bridges,
+                        deleted=refine_counts,
+                        note='Ji et al. Algorithm 1 thresholds; shorter (not dimmer) branch of short two-branch loops deleted'),
+        percolation=dict(threshold_removed_median=float(np.median([d['percolation_threshold_removed'] for d in descriptors])),
+                         threshold_removed_range=[float(min(d['percolation_threshold_removed'] for d in descriptors)),
+                                                  float(max(d['percolation_threshold_removed'] for d in descriptors))],
+                         repeats=PERCOLATION_REPEATS, brain_threshold_removed=list(BRAIN_PERCOLATION_REMOVED)),
+        brain_reference=dict(mean_loop_branches=BRAIN_MEAN_LOOP_BRANCHES, se=BRAIN_LOOP_SE, source=BRAIN_REFERENCE_LABEL,
+                             citation=CITATION,
+                             note='published mean ± SE over 240-µm cubes of a whole-brain graph; not recomputed (no brain data)'),
         window_bias=bias, **extra)
     (out / 'summary.json').write_text(json.dumps(summary, indent=2))
     return summary, out

@@ -194,11 +194,20 @@ python -m mousevasculature.loop_topology                  # reads results/*_fill
 python -m mousevasculature.loop_topology --variant filled --out results/ji2021_filled
 ```
 
+Reference: Ji X, Ferreira T, Friedman B, Liu R, Liechty H, Bas E, Chandrashekar J,
+Kleinfeld D (2021). Brain microvasculature has a common topology with local differences in
+geometry that match metabolic load. *Neuron* 109(7):1168–1187.e13.
+[doi:10.1016/j.neuron.2021.02.006](https://doi.org/10.1016/j.neuron.2021.02.006).
+The paper PDF is not stored in this repository.
+
 For every branch, removes it, finds the shortest detour between its ends (weighted by
-centerline length; fewest-branch detours as a sensitivity check) and records the loop
-size in branches and µm; branches without a detour are bridges. Loops are computed on
-each whole cube, then assigned to 250 µm subregions (8 per cube) for the Fig. 3e-style
-box plots. Writes to `results/ji2021_comparison/`, reading only saved results:
+centerline length, as in the paper's definition: "number of vessel segments in the shortest
+loop measured by segment length"; fewest-branch detours as a sensitivity check) and records
+the loop size in branches and µm; branches without a detour are bridges. Loops are computed
+on each whole cube, then assigned to 240 µm regions (the paper's 240-cubes; a centred
+2 × 2 × 2 grid per 500 µm cube, leaving a 10 µm margin whose branches count only in pooled
+statistics) for the Fig. 3E-style box plots. Writes to `results/ji2021_comparison/`, reading
+only saved results:
 
 - `figA_shortest_loop_branches`: per-region box plots and pooled sensitivity checks
   (interior branches only, loops ≥ 50 µm, fewest-branch detours).
@@ -211,12 +220,31 @@ box plots. Writes to `results/ji2021_comparison/`, reading only saved results:
 - `branch_loops.csv` (one row per branch), `cube_descriptors.csv`, `random_deletion.csv`,
   `window_bias.csv`, `summary.json`.
 
-No brain graph data are included: the brain value (mean 8.97 ± 0.53 branches) is the
-published figure from Ji et al. (2021), shown as a reference line, not recomputed here.
-The random-deletion panel is analogous to their Fig. 3h; its exact measure was not checked
-against the paper. Loop counts
-depend strongly on window size and have not converged at 500 µm (see `figD`), so the
-prostate mean is a lower bound and not yet directly comparable to the brain value.
+How this matches the paper, and where it cannot:
+
+- **Brain reference.** 8.97 ± 0.53 branches is the paper's **mean ± SE** (p. 1175), from
+  240-cubes of a graph covering the whole brain. No brain data are included (the paper's
+  data, 200 TB, are available from the authors on request), so it is a reference line only.
+- **Graph refinement.** The `ji_refined` row in `summary.json` and the dashed line in
+  `figA` re-run the loops after the paper's Algorithm 1: free-ended branches ≤ 2 µm,
+  self-loops ≤ 30 µm, and one branch of each two-branch loop with a branch ≤ 15 µm are
+  deleted iteratively. The paper deletes the dimmer branch of such a pair; binary masks have
+  no intensity, so the shorter one is deleted. The paper's machine-learning steps (removing
+  false connections, bridging gaps) are not reproduced.
+- **Random removal (Fig. 3H).** Same measure as the paper: remove a fraction of branches at
+  random, record the fraction of all nodes in the largest component, 500 repeats, breakdown
+  at the steepest drop. Brain networks break down after 0.433–0.447 are removed. The
+  prostate cubes are small (about 150–250 branches each) and often already in several
+  pieces, so their curves fall gradually without a sharp transition; their breakdown values
+  are less precise than the brain's and are best read as a trend.
+- **Window size.** The brain loops come from an unbounded graph; prostate loops cannot
+  leave their 500 µm cube. Loop counts still rise with window size at 500 µm (`figD`), so
+  the prostate mean is a lower bound and not yet directly comparable to the brain value.
+- **Resolution.** The paper segments at 1 µm isotropic voxels; these masks are 1.8 × 1.8 ×
+  2.0 µm. Coarser voxels can merge vessels that pass close together, creating false short
+  loops, which the paper removed with a trained classifier. This would also push the
+  prostate value down; prostate vessels are wider than brain capillaries (radius ≈ 4 µm vs
+  2.7 µm), which limits the effect.
 
 ## Share the project
 

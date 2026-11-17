@@ -10,11 +10,11 @@
     6.731547422746947
   ],
   "region_mean_loop_branches_mean_sd": [
-    6.426652228285893,
-    1.0976708722073019
+    6.455065195633252,
+    1.09384396617832
   ],
-  "regions": 52,
-  "region_size_um": 250.0,
+  "regions": 50,
+  "region_size_um": 240.0,
   "mean_loop_branches_fewest_hops": 6.189665653495441,
   "hop_differs_fraction": 0.14164133738601822,
   "mean_loop_branches_interior": 6.504153354632588,
@@ -27,10 +27,37 @@
   "looped_fraction_interior": 0.7578692493946732,
   "boundary_branch_fraction": 0.170016077170418,
   "degree2_nodes": 0,
+  "ji_refined": {
+    "mean_loop_branches": 6.463157894736842,
+    "median_loop_branches": 6.0,
+    "branches": 2445,
+    "looped_branches": 1615,
+    "bridges": 830,
+    "deleted": {
+      "stubs": 6,
+      "self_loops": 1,
+      "parallel": 10
+    },
+    "note": "Ji et al. Algorithm 1 thresholds; shorter (not dimmer) branch of short two-branch loops deleted"
+  },
+  "percolation": {
+    "threshold_removed_median": 0.25,
+    "threshold_removed_range": [
+      0.05,
+      0.33
+    ],
+    "repeats": 500,
+    "brain_threshold_removed": [
+      0.433,
+      0.447
+    ]
+  },
   "brain_reference": {
     "mean_loop_branches": 8.97,
-    "source": "brain, Ji et al. 2021 (reported mean 8.97 \u00b1 0.53)",
-    "note": "published value, confirmed by the user; not recomputed (no brain data)"
+    "se": 0.53,
+    "source": "brain, Ji et al. 2021 (mean 8.97 \u00b1 0.53 SE)",
+    "citation": "Ji et al. (2021) Neuron 109:1168-1187. Brain microvasculature has a common topology with local differences in geometry that match metabolic load. doi:10.1016/j.neuron.2021.02.006",
+    "note": "published mean \u00b1 SE over 240-\u00b5m cubes of a whole-brain graph; not recomputed (no brain data)"
   },
   "window_bias": [
     {
@@ -41,11 +68,11 @@
       "looped_fraction": 0.13586781876557028
     },
     {
-      "window_um": 250,
+      "window_um": 240,
       "windows": 117,
-      "mean_loop_branches": 3.5266655266272986,
-      "sd_loop_branches": 1.5489316758212046,
-      "looped_fraction": 0.22852043933310406
+      "mean_loop_branches": 3.55665232430258,
+      "sd_loop_branches": 1.4221461280511483,
+      "looped_fraction": 0.20308838071960741
     },
     {
       "window_um": 300,
@@ -87,7 +114,7 @@
     6.424408014571949,
     6.748175182481752
   ],
-  "density_spearman": 0.04260223683087167,
-  "density_p": 0.7642707384557992,
-  "regions_used": 52
+  "density_spearman": 0.04677183126993446,
+  "density_p": 0.7470448918179411,
+  "regions_used": 50
 }
