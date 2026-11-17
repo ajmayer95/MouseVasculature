@@ -187,6 +187,37 @@ hole-filled version is saved separately for comparison. See [statistics methods 
 QC guidance](docs/statistics.md) before interpreting values. Knot invariants are not
 implemented.
 
+## Shortest-loop comparison with mouse brain (Ji et al. 2021, Fig. 3e)
+
+```sh
+python -m mousevasculature.loop_topology                  # reads results/*_filled_closed
+python -m mousevasculature.loop_topology --variant filled --out results/ji2021_filled
+```
+
+For every branch, removes it, finds the shortest detour between its ends (weighted by
+centerline length; fewest-branch detours as a sensitivity check) and records the loop
+size in branches and µm; branches without a detour are bridges. Loops are computed on
+each whole cube, then assigned to 250 µm subregions (8 per cube) for the Fig. 3e-style
+box plots. Writes to `results/ji2021_comparison/`, reading only saved results:
+
+- `figA_shortest_loop_branches`: per-region box plots and pooled sensitivity checks
+  (interior branches only, loops ≥ 50 µm, fewest-branch detours).
+- `figB_spatial_loop_size`: top-view map of every cube coloured by loop size, bridges grey.
+- `figC_topology_comparisons`: junction degree, looped vs bridge fraction, loop
+  perimeter, random branch deletion, loop size by diameter and by local length density.
+- `figD_window_size_bias`: loop statistics recomputed inside smaller windows of each cube.
+- Copies of the four figures (PNG and PDF) are kept in `reports/ji2021/` so they are
+  version-controlled; re-running updates only `results/ji2021_comparison/`.
+- `branch_loops.csv` (one row per branch), `cube_descriptors.csv`, `random_deletion.csv`,
+  `window_bias.csv`, `summary.json`.
+
+No brain graph data are included: the brain value (mean 8.97 ± 0.53 branches) is the
+published figure from Ji et al. (2021), shown as a reference line, not recomputed here.
+The random-deletion panel is analogous to their Fig. 3h; its exact measure was not checked
+against the paper. Loop counts
+depend strongly on window size and have not converged at 500 µm (see `figD`), so the
+prostate mean is a lower bound and not yet directly comparable to the brain value.
+
 ## Share the project
 
 The private repository is https://github.com/ajmayer95/MouseVasculature.

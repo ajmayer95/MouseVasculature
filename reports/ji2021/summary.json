@@ -1,0 +1,93 @@
+{
+  "cubes": 15,
+  "branches": 2488,
+  "looped_branches": 1645,
+  "bridges": 843,
+  "mean_loop_branches": 6.443161094224924,
+  "median_loop_branches": 6.0,
+  "mean_loop_branches_cube_bootstrap_95ci": [
+    6.154318734565591,
+    6.731547422746947
+  ],
+  "region_mean_loop_branches_mean_sd": [
+    6.426652228285893,
+    1.0976708722073019
+  ],
+  "regions": 52,
+  "region_size_um": 250.0,
+  "mean_loop_branches_fewest_hops": 6.189665653495441,
+  "hop_differs_fraction": 0.14164133738601822,
+  "mean_loop_branches_interior": 6.504153354632588,
+  "mean_loop_branches_without_artifacts": 6.501231527093596,
+  "artifact_loops": 21,
+  "self_loops": 1,
+  "parallel": 84,
+  "median_loop_length_um": 511.6139029244935,
+  "looped_fraction": 0.6611736334405145,
+  "looped_fraction_interior": 0.7578692493946732,
+  "boundary_branch_fraction": 0.170016077170418,
+  "degree2_nodes": 0,
+  "brain_reference": {
+    "mean_loop_branches": 8.97,
+    "source": "brain, Ji et al. 2021 (reported mean 8.97 \u00b1 0.53)",
+    "note": "published value, confirmed by the user; not recomputed (no brain data)"
+  },
+  "window_bias": [
+    {
+      "window_um": 200,
+      "windows": 108,
+      "mean_loop_branches": 3.0164898989898985,
+      "sd_loop_branches": 1.1954459123549597,
+      "looped_fraction": 0.13586781876557028
+    },
+    {
+      "window_um": 250,
+      "windows": 117,
+      "mean_loop_branches": 3.5266655266272986,
+      "sd_loop_branches": 1.5489316758212046,
+      "looped_fraction": 0.22852043933310406
+    },
+    {
+      "window_um": 300,
+      "windows": 120,
+      "mean_loop_branches": 4.330865597551717,
+      "sd_loop_branches": 1.5555262194006096,
+      "looped_fraction": 0.3571925544286766
+    },
+    {
+      "window_um": 375,
+      "windows": 120,
+      "mean_loop_branches": 5.479383679734288,
+      "sd_loop_branches": 1.308485076707101,
+      "looped_fraction": 0.5367429661066169
+    },
+    {
+      "window_um": 450,
+      "windows": 120,
+      "mean_loop_branches": 5.9634120511692625,
+      "sd_loop_branches": 0.7926351517473855,
+      "looped_fraction": 0.6622414363461471
+    },
+    {
+      "window_um": 500,
+      "windows": 15,
+      "mean_loop_branches": 6.347655746025132,
+      "sd_loop_branches": 0.583540479026407,
+      "looped_fraction": 0.6526129088795304
+    }
+  ],
+  "diameter_spearman": 0.08483298177057741,
+  "diameter_mannwhitney_p": 0.001399623900068733,
+  "diameter_terciles_um": [
+    7.992032784087288,
+    9.085780184949156
+  ],
+  "diameter_tercile_means": [
+    6.156934306569343,
+    6.424408014571949,
+    6.748175182481752
+  ],
+  "density_spearman": 0.04260223683087167,
+  "density_p": 0.7642707384557992,
+  "regions_used": 52
+}
