@@ -41,6 +41,12 @@ BRAIN_REFERENCE_LABEL = 'brain, Ji et al. 2021 (mean 8.97 ± 0.53 SE)'
 BRAIN_PERCOLATION_REMOVED = (0.433, 0.447)  # p. 1176, Fig. 3H: fraction of branches removed at breakdown
 CITATION = ('Ji et al. (2021) Neuron 109:1168-1187. Brain microvasculature has a common topology with local '
             'differences in geometry that match metabolic load. doi:10.1016/j.neuron.2021.02.006')
+# Fraction of branches whose shortest loop has k branches in brain, Fig. 3E. Only k = 2 is
+# stated in the text (0.011, median); k = 3 and 4 are ranges READ BY EYE from the box-plot
+# medians and must be replaced by exact values (digitised or from the authors) before citing.
+# Brain branches are nearly all on loops, so these approximate fractions of all branches.
+BRAIN_FIG3E_BY_EYE = {2: (0.011, 0.011), 3: (0.015, 0.03), 4: (0.03, 0.05)}
+SMALL_LOOP_SETS = {'≤3': (1, 3), '3–4': (3, 4), '≤4': (1, 4)}
 REGION_UM = 240.   # Ji et al. analyse 240-µm cubes
 CUBE_UM = 500.     # prostate ROI edge (calibration.json)
 ARTIFACT_LOOP_UM = 50.  # matches statistics.SMALL_LOOP_UM
@@ -49,6 +55,7 @@ JI_STUB_UM, JI_SELF_LOOP_UM, JI_PARALLEL_UM = 2., 30., 15.
 PERCOLATION_REPEATS = 500
 MAX_BIN = 16            # loop sizes above this go into one '>16' bin
 MIN_REGION_EDGES = 15   # regions with fewer looped branches are left out of the box plots
+MIN_WINDOW_EDGES = 10   # windows with fewer branches are left out of the small-loop fractions
 
 
 def multigraph(edges):
@@ -136,6 +143,7 @@ def cube_edges(name, graph, summary, region_um=REGION_UM):
             loop_branches_hops=cycle and cycle['branches_hops'], loop_length_hops_um=cycle and cycle['length_hops_um'],
             loop_kind=None if cycle is None else {1: 'self_loop', 2: 'parallel'}.get(cycle['branches'], 'cycle'),
             likely_artifact=bool(cycle and cycle['length_um'] < ARTIFACT_LOOP_UM),
+            loop_members=' '.join(map(str, sorted(cycle['members']))) if cycle else '',
             mid_z_um=mid[0], mid_y_um=mid[1], mid_x_um=mid[2],
             region=None if region is None else f'{name}:z{region[0]}y{region[1]}x{region[2]}'))
     return rows, g
@@ -232,6 +240,29 @@ def cube_descriptors(name, g, rows, summary, deletion_fractions, repeats=PERCOLA
     return out, curve
 
 
+def brain_small_fraction(lo, hi):
+    """(low, high) brain fraction of branches on loops of lo..hi branches, from BRAIN_FIG3E_BY_EYE."""
+    keys = [k for k in BRAIN_FIG3E_BY_EYE if lo <= k <= hi]
+    return sum(BRAIN_FIG3E_BY_EYE[k][0] for k in keys), sum(BRAIN_FIG3E_BY_EYE[k][1] for k in keys)
+
+
+def small_fractions(sizes):
+    """Fraction of ALL branches (bridges count as not small) on a shortest loop in each SMALL_LOOP_SETS range."""
+    s = np.array([0 if x is None else x for x in sizes])
+    return {name: float(np.mean((s >= lo) & (s <= hi))) for name, (lo, hi) in SMALL_LOOP_SETS.items()}
+
+
+def load_annotations(folder):
+    """Branch-id sets of loops annotated in the explorer, by label ('real', 'artifact', 'unsure')."""
+    path = Path(folder) / 'loop_annotations.csv'
+    out = {}
+    if path.exists():
+        with path.open(newline='') as handle:
+            for row in csv.DictReader(handle):
+                out.setdefault(row['label'], []).append(frozenset(int(b) for b in row['branch_ids'].split()))
+    return out
+
+
 def load_cubes(results, variant_suffix):
     cubes = {}
     for folder in sorted(Path(results).glob(f'*_Filaments{variant_suffix}')):
@@ -302,7 +333,7 @@ def window_bias(cubes, sizes=(200, 240, 300, 375, 450, 500), cube_um=CUBE_UM):
     results = []
     for size in sizes:
         corners = [(0., 0., 0.)] if size >= cube_um else list(itertools.product((0., cube_um - size), repeat=3))
-        means, looped = [], []
+        means, looped, small = [], [], []
         for graph, _ in cubes.values():
             scale = np.asarray(graph['voxel_size_um'], float)
             mids = {e['id']: midpoint(np.asarray(e['points_zyx'], float) * scale) for e in graph['edges']}
@@ -314,12 +345,17 @@ def window_bias(cubes, sizes=(200, 240, 300, 375, 450, 500), cube_um=CUBE_UM):
                     g = contract_degree_two(g)
                 if not g.number_of_edges():
                     continue
-                loops = [c['branches'] for u, v, k in list(g.edges(keys=True)) if (c := shortest_cycle(g, u, v, k))]
+                cycles = [shortest_cycle(g, u, v, k) for u, v, k in list(g.edges(keys=True))]
+                loops = [c['branches'] for c in cycles if c]
                 looped.append(len(loops) / g.number_of_edges())
                 if loops:
                     means.append(np.mean(loops))
+                if g.number_of_edges() >= MIN_WINDOW_EDGES:
+                    small.append(small_fractions([c and c['branches'] for c in cycles]))
         results.append(dict(window_um=size, windows=len(looped), mean_loop_branches=float(np.mean(means)),
-                            sd_loop_branches=float(np.std(means, ddof=1)), looped_fraction=float(np.mean(looped))))
+                            sd_loop_branches=float(np.std(means, ddof=1)), looped_fraction=float(np.mean(looped)),
+                            small_windows=len(small),
+                            **{f'small_{name}': float(np.mean([s[name] for s in small])) for name in SMALL_LOOP_SETS}))
     return results
 
 
@@ -345,7 +381,55 @@ def figure_d(bias, out):
     save(fig, out, 'figD_window_size_bias')
 
 
+def review_small_loops(rows, annotations):
+    """Small-loop fractions before and after removing loops annotated as artifacts in the explorer.
+
+    A branch's shortest loop counts as reviewed when its branch set equals an annotated loop.
+    Branches whose shortest loop was marked 'artifact' are counted as not on a small loop
+    (their true shortest loop is unknown but larger).
+    """
+    status = []
+    for r in rows:
+        members = frozenset(int(b) for b in r['loop_members'].split()) if r['loop_members'] else None
+        labels = annotations.get(r['cube'], {})
+        status.append(next((label for label, sets in labels.items() if members in sets), None) if members else None)
+    small = [r['loop_branches'] is not None and r['loop_branches'] <= max(hi for _, hi in SMALL_LOOP_SETS.values())
+             for r in rows]
+    reviewed = sum(1 for s, sm in zip(status, small) if sm and s)
+    cleaned = [None if s == 'artifact' else r['loop_branches'] for r, s in zip(rows, status)]
+    return dict(
+        annotated_loops={label: sum(len(c.get(label, [])) for c in annotations.values()) for label in ('real', 'artifact', 'unsure')},
+        small_loop_branches=int(sum(small)), small_loop_branches_reviewed=int(reviewed),
+        branches_on_artifact_loops=int(sum(s == 'artifact' for s in status)),
+        before=small_fractions([r['loop_branches'] for r in rows]),
+        after_removing_artifacts=small_fractions(cleaned))
+
+
 # ---- figures -------------------------------------------------------------------------
+def figure_e(bias, review, out):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(7.5, 4.3), layout='constrained')
+    w = [b['window_um'] for b in bias]
+    colours = {'≤3': '#08519c', '3–4': '#31a354', '≤4': '#756bb1'}
+    for i, (name, (lo, hi)) in enumerate(SMALL_LOOP_SETS.items()):
+        ax.plot(w, [b[f'small_{name}'] for b in bias], marker='o', color=colours[name], label=f'prostate, loops of {name} branches')
+        low, high = brain_small_fraction(lo, hi)
+        ax.add_patch(plt.Rectangle((520 + 18 * i, low), 14, max(high - low, .002), color=colours[name], alpha=.45, lw=0))
+        if review['small_loop_branches_reviewed']:
+            ax.scatter([500], [review['after_removing_artifacts'][name]], marker='x', s=50, color=colours[name], zorder=4)
+    ax.text(538, ax.get_ylim()[1] * .02 + .002, 'brain\n(by eye,\nFig. 3E)', fontsize=6.5, ha='center', va='bottom')
+    ax.set_xlim(180, 590)
+    ax.set_xticks(w)
+    ax.set_xlabel('window side (µm); loops computed inside the window only\n'
+                  '(< 500 µm: 8 overlapping corner windows per cube; 500 µm: the 15 whole cubes)', fontsize=8.5)
+    ax.set_ylabel('fraction of ALL branches on a loop this small')
+    reviewed = review['small_loop_branches_reviewed']
+    note = (f"× = whole cube after removing loops marked artifact ({reviewed}/{review['small_loop_branches']} small-loop branches reviewed)"
+            if reviewed else 'no explorer annotations yet: review 3–4-branch loops to test for segmentation artifacts')
+    ax.set_title('Small loops: prostate values rise with window size, so 500 µm values are lower bounds\n' + note, fontsize=8.5)
+    ax.legend(fontsize=7, frameon=False, loc='upper left')
+    style(ax)
+    save(fig, out, 'figE_small_loops')
 def style(ax):
     ax.spines[['top', 'right']].set_visible(False)
     ax.tick_params(labelsize=8)
@@ -598,6 +682,9 @@ def run(results='results', variant_suffix='_filled_closed', out=None):
     extra = figure_c(rows, descriptors, curves, fractions, out)
     bias = window_bias(cubes)
     figure_d(bias, out)
+    annotations = {name: load_annotations(Path(results) / f'{name}_Filaments{variant_suffix}') for name in cubes}
+    review = review_small_loops(rows, annotations)
+    figure_e(bias, review, out)
     write_csv(out / 'window_bias.csv', bias)
     write_csv(out / 'branch_loops.csv', rows)
     write_csv(out / 'cube_descriptors.csv', descriptors)
@@ -634,6 +721,10 @@ def run(results='results', variant_suffix='_filled_closed', out=None):
         brain_reference=dict(mean_loop_branches=BRAIN_MEAN_LOOP_BRANCHES, se=BRAIN_LOOP_SE, source=BRAIN_REFERENCE_LABEL,
                              citation=CITATION,
                              note='published mean ± SE over 240-µm cubes of a whole-brain graph; not recomputed (no brain data)'),
+        small_loops=dict(review,
+                         brain_by_eye={name: list(brain_small_fraction(lo, hi)) for name, (lo, hi) in SMALL_LOOP_SETS.items()},
+                         note='fractions of ALL branches; prostate values rise with window size (see window_bias), so the '
+                              'whole-cube values are lower bounds; brain k=3,4 read by eye from Fig. 3E'),
         window_bias=bias, **extra)
     (out / 'summary.json').write_text(json.dumps(summary, indent=2))
     return summary, out

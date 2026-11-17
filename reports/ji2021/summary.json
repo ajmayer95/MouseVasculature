@@ -59,48 +59,107 @@
     "citation": "Ji et al. (2021) Neuron 109:1168-1187. Brain microvasculature has a common topology with local differences in geometry that match metabolic load. doi:10.1016/j.neuron.2021.02.006",
     "note": "published mean \u00b1 SE over 240-\u00b5m cubes of a whole-brain graph; not recomputed (no brain data)"
   },
+  "small_loops": {
+    "annotated_loops": {
+      "real": 0,
+      "artifact": 0,
+      "unsure": 0
+    },
+    "small_loop_branches": 478,
+    "small_loop_branches_reviewed": 0,
+    "branches_on_artifact_loops": 0,
+    "before": {
+      "\u22643": 0.10128617363344052,
+      "3\u20134": 0.1579581993569132,
+      "\u22644": 0.19212218649517684
+    },
+    "after_removing_artifacts": {
+      "\u22643": 0.10128617363344052,
+      "3\u20134": 0.1579581993569132,
+      "\u22644": 0.19212218649517684
+    },
+    "brain_by_eye": {
+      "\u22643": [
+        0.026,
+        0.040999999999999995
+      ],
+      "3\u20134": [
+        0.045,
+        0.08
+      ],
+      "\u22644": [
+        0.055999999999999994,
+        0.091
+      ]
+    },
+    "note": "fractions of ALL branches; prostate values rise with window size (see window_bias), so the whole-cube values are lower bounds; brain k=3,4 read by eye from Fig. 3E"
+  },
   "window_bias": [
     {
       "window_um": 200,
       "windows": 108,
       "mean_loop_branches": 3.0164898989898985,
       "sd_loop_branches": 1.1954459123549597,
-      "looped_fraction": 0.13586781876557028
+      "looped_fraction": 0.13586781876557028,
+      "small_windows": 38,
+      "small_\u22643": 0.0883820111365878,
+      "small_3\u20134": 0.11568694949028777,
+      "small_\u22644": 0.16839392818410853
     },
     {
       "window_um": 240,
       "windows": 117,
       "mean_loop_branches": 3.55665232430258,
       "sd_loop_branches": 1.4221461280511483,
-      "looped_fraction": 0.20308838071960741
+      "looped_fraction": 0.20308838071960741,
+      "small_windows": 79,
+      "small_\u22643": 0.11209957474234392,
+      "small_3\u20134": 0.12796534072659752,
+      "small_\u22644": 0.174415006890462
     },
     {
       "window_um": 300,
       "windows": 120,
       "mean_loop_branches": 4.330865597551717,
       "sd_loop_branches": 1.5555262194006096,
-      "looped_fraction": 0.3571925544286766
+      "looped_fraction": 0.3571925544286766,
+      "small_windows": 118,
+      "small_\u22643": 0.12478161702029283,
+      "small_3\u20134": 0.1321731765499585,
+      "small_\u22644": 0.18850484758786204
     },
     {
       "window_um": 375,
       "windows": 120,
       "mean_loop_branches": 5.479383679734288,
       "sd_loop_branches": 1.308485076707101,
-      "looped_fraction": 0.5367429661066169
+      "looped_fraction": 0.5367429661066169,
+      "small_windows": 120,
+      "small_\u22643": 0.12772871133610772,
+      "small_3\u20134": 0.15807114535709926,
+      "small_\u22644": 0.20888138766074438
     },
     {
       "window_um": 450,
       "windows": 120,
       "mean_loop_branches": 5.9634120511692625,
       "sd_loop_branches": 0.7926351517473855,
-      "looped_fraction": 0.6622414363461471
+      "looped_fraction": 0.6622414363461471,
+      "small_windows": 120,
+      "small_\u22643": 0.12614222371268957,
+      "small_3\u20134": 0.17796136440234314,
+      "small_\u22644": 0.22178146734097487
     },
     {
       "window_um": 500,
       "windows": 15,
       "mean_loop_branches": 6.347655746025132,
       "sd_loop_branches": 0.583540479026407,
-      "looped_fraction": 0.6526129088795304
+      "looped_fraction": 0.6526129088795304,
+      "small_windows": 15,
+      "small_\u22643": 0.10482390762057676,
+      "small_3\u20134": 0.1550968719904184,
+      "small_\u22644": 0.19260747747087278
     }
   ],
   "diameter_spearman": 0.08483298177057741,

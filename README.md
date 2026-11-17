@@ -240,11 +240,56 @@ How this matches the paper, and where it cannot:
 - **Window size.** The brain loops come from an unbounded graph; prostate loops cannot
   leave their 500 µm cube. Loop counts still rise with window size at 500 µm (`figD`), so
   the prostate mean is a lower bound and not yet directly comparable to the brain value.
+- **Small loops (`figE_small_loops`).** The mean cannot be compared yet, but the fraction of
+  *all* branches on a loop of ≤ 3, 3–4 or ≤ 4 branches can, one-sidedly: it rises with window
+  size, so 500 µm values are lower bounds. Prostate is about 0.10–0.13 (≤ 3) and 0.16–0.18
+  (3–4) versus roughly 0.03–0.04 and 0.05–0.08 in brain. Only the 2-branch brain value is
+  stated in the paper's text; the 3- and 4-branch values are **read by eye** from the Fig. 3E
+  box plots (`BRAIN_FIG3E_BY_EYE`) and must be replaced by exact values before citing.
+- **Reviewing small loops.** Coarse voxels can create false small loops, which would inflate
+  exactly this comparison. In the explorer, choose the loop filter `3–4 branches, not yet
+  annotated` (or `2–4 …`), step with `,` / `.` and press R (real), J (artifact) or U (unsure).
+  Re-running `loop_topology` then reports the small-loop fractions with artifact loops
+  removed (`small_loops` in `summary.json`, crosses in `figE`).
 - **Resolution.** The paper segments at 1 µm isotropic voxels; these masks are 1.8 × 1.8 ×
   2.0 µm. Coarser voxels can merge vessels that pass close together, creating false short
   loops, which the paper removed with a trained classifier. This would also push the
   prostate value down; prostate vessels are wider than brain capillaries (radius ≈ 4 µm vs
   2.7 µm), which limits the effect.
+
+## Density within the tissue where vessels can form
+
+```sh
+python -m mousevasculature.tissue_domain                       # reads results/*_filled_closed
+python -m mousevasculature.tissue_domain --domain-dir masks/   # use real tissue masks instead
+```
+
+Prostate is glandular: lumens and epithelium contain no vessels, so length per crop volume
+mixes vessel packing with how much of the crop is gland. With only vessel masks available,
+the vascular domain is estimated from the vessels with a rolling ball of radius R: gaps
+narrower than 2R count as tissue between vessels, wider voids are excluded (a morphological
+closing of the vessel mask). Every non-vessel voxel gets its local thickness, the diameter
+of the largest vessel-free ball containing it, saved per cube as
+`local_thickness_radius.npz`; the domain for any R follows from it.
+
+R is a size scale the user chooses, so results are reported for R = 50–200 µm. Below about
+80 µm the domain shrinks to a shell around each vessel and the density mostly reflects R;
+50 µm is included to show that. Whether a void continues past a crop face is unknown, so
+everything is computed twice: with no vessels beyond the faces (voids extend outward, the
+smallest domain) and with vessels just beyond every face (voids stop there, the largest
+domain). The two bounds differ a lot, and every large void touches a crop face, so whole
+glands are never seen inside one 500 µm cube.
+
+Outputs in `results/tissue_domain/`: `cubes.csv` and `regions.csv` (density per crop and
+per domain, per cube and per 240 µm region; regions with < 25% domain are left blank),
+`voids.csv`, `summary.json`, `figA_domain_density_sweep`, `figB_void_sizes`,
+`figC_domain_slices`. Region-to-region variation is split into shares of the sum of squares
+between animals, between cubes of one animal, and within cubes.
+
+When a tissue channel becomes available, segment the tissue where vessels can form and pass
+one mask per cube with `--domain-dir` (`<cube>.npz` with key `mask`, or `<cube>.tif`, same
+shape as the vessel mask, nonzero = tissue). It replaces the vessel-derived estimate and
+removes the dependence on R.
 
 ## Share the project
 

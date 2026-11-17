@@ -95,3 +95,22 @@ class RegionAndPercolationTests(unittest.TestCase):
         curve = percolation_curve(g, [0., 1.], repeats=5)
         self.assertEqual(curve, [1., 1 / 20])
         self.assertAlmostEqual(percolation_threshold([0., .1, .2, .3], [1., .9, .2, .1]), .15)
+
+
+class SmallLoopTests(unittest.TestCase):
+    def test_fractions_count_bridges_as_not_small(self):
+        from mousevasculature.loop_topology import small_fractions
+        f = small_fractions([3, 3, 4, 7, None])
+        self.assertAlmostEqual(f['≤3'], 2 / 5)
+        self.assertAlmostEqual(f['3–4'], 3 / 5)
+        self.assertAlmostEqual(f['≤4'], 3 / 5)
+
+    def test_review_removes_artifact_loops(self):
+        from mousevasculature.loop_topology import review_small_loops
+        rows = [dict(cube='A', loop_branches=3, loop_members='1 2 3'),
+                dict(cube='A', loop_branches=3, loop_members='4 5 6'),
+                dict(cube='A', loop_branches=None, loop_members='')]
+        review = review_small_loops(rows, {'A': {'artifact': [frozenset({1, 2, 3})], 'real': [frozenset({4, 5, 6})]}})
+        self.assertEqual(review['small_loop_branches_reviewed'], 2)
+        self.assertAlmostEqual(review['before']['≤3'], 2 / 3)
+        self.assertAlmostEqual(review['after_removing_artifacts']['≤3'], 1 / 3)

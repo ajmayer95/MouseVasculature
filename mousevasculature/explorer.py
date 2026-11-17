@@ -12,6 +12,9 @@ LOOP_FILTERS = {
     f'small loops (<{SMALL_LOOP_UM:g} µm)': lambda loop: loop['small'],
     'interior loops (no crop contact)': lambda loop: not loop['touches_boundary'],
     'loops touching crop': lambda loop: loop['touches_boundary'],
+    # Few-branch loops drive the small-loop comparison with brain (loop_topology figure E).
+    '3–4 branches': lambda loop: 3 <= len(loop['branch_ids']) <= 4,
+    '2–4 branches': lambda loop: 2 <= len(loop['branch_ids']) <= 4,
 }
 
 
@@ -540,6 +543,8 @@ def add_explorer(viewer, mask, branch_graph, scale, name, folder=None, on_select
     filters = dict(LOOP_FILTERS)
     filters['not yet annotated'] = lambda loop: loop['loop_id'] not in annotations
     filters['small, not yet annotated'] = lambda loop: loop['small'] and loop['loop_id'] not in annotations
+    filters['3–4 branches, not yet annotated'] = lambda loop: 3 <= len(loop['branch_ids']) <= 4 and loop['loop_id'] not in annotations
+    filters['2–4 branches, not yet annotated'] = lambda loop: 2 <= len(loop['branch_ids']) <= 4 and loop['loop_id'] not in annotations
     for label in ANNOTATION_LABELS:
         filters[f'annotated {label}'] = (lambda wanted: lambda loop: annotations.get(loop['loop_id'], {}).get('label') == wanted)(label)
 
